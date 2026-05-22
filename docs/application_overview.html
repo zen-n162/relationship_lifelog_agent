@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relationship Lifelog Agent Overview</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1f2933;
+      --muted: #65758b;
+      --line: #d8dee8;
+      --accent: #166b7a;
+      --accent-soft: #e5f4f6;
+      --warning: #8a5a10;
+      --warning-soft: #fff5dd;
+      --ok: #146c43;
+      --ok-soft: #e7f6ed;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family:
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+      line-height: 1.7;
+    }
+
+    .page {
+      width: min(1080px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 56px;
+    }
+
+    header {
+      padding: 36px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 14px;
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 1.45rem;
+      line-height: 1.35;
+    }
+
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 1.05rem;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    code {
+      padding: 0.1em 0.35em;
+      background: #edf1f5;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 12px 0 0;
+      padding: 14px 16px;
+      background: #151b23;
+      color: #eff6ff;
+      border-radius: 8px;
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+      color: inherit;
+    }
+
+    section {
+      margin-top: 18px;
+      padding: 28px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    ul,
+    ol {
+      margin: 10px 0 0;
+      padding-left: 1.25rem;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    .lead {
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .card {
+      min-height: 100%;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .card p {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 32px;
+      padding: 5px 10px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid #b9dde3;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .callout {
+      margin-top: 16px;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+    }
+
+    .callout.ok {
+      background: var(--ok-soft);
+      border-color: #b8dfc8;
+      color: var(--ok);
+    }
+
+    .callout.warning {
+      background: var(--warning-soft);
+      border-color: #ecd28f;
+      color: var(--warning);
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+
+    .num {
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 50%;
+      font-weight: 800;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      min-width: 720px;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf3f8;
+      font-size: 0.92rem;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    footer {
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      text-align: center;
+    }
+
+    @media (max-width: 820px) {
+      .page {
+        width: min(100% - 20px, 1080px);
+        padding-top: 18px;
+      }
+
+      header,
+      section {
+        padding: 22px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-step {
+        grid-template-columns: 36px minmax(0, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <p class="eyebrow">Local-first relationship memory review</p>
+      <h1>Relationship Lifelog Agent</h1>
+      <p class="lead">
+        Relationship Lifelog Agentは、既存のローカルlifelogアプリを上流の記憶ツールとして扱い、
+        関係にまつわる記録を慎重に整理するためのローカル専用アプリケーションです。
+        関係を断定・診断するAIではなく、観測できる根拠を集めて見直すためのレビュー支援ツールです。
+      </p>
+      <div class="badge-row" aria-label="安全性と実行条件">
+        <span class="badge">Local only</span>
+        <span class="badge">Mock adapters first</span>
+        <span class="badge">SQLite</span>
+        <span class="badge">Gradio UI</span>
+        <span class="badge">No external APIs</span>
+        <span class="badge">share=False</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>このアプリがすること</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>質問を意図に分類</h3>
+          <p>
+            日本語の質問をルールベースで分類します。MVPではLLM分類を使わず、
+            「喧嘩はどのくらいしている？」などを決定的にintentへ振り分けます。
+          </p>
+        </article>
+        <article class="card">
+          <h3>根拠を集める</h3>
+          <p>
+            現時点ではmock adapterだけを使い、LINE候補、外出候補、メモ候補、
+            月次振り返り候補を安全に返します。上流アプリのDBは更新しません。
+          </p>
+        </article>
+        <article class="card">
+          <h3>慎重に回答する</h3>
+          <p>
+            件数、日付、候補の集計はPythonで計算します。喧嘩や仲直りを断定せず、
+            事実と推定を分けて、根拠・信頼度・注意を含む回答を返します。
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>MVPで答えられる質問</h2>
+      <p>現在のMVPは、mock dataを使って次のような質問に対応します。</p>
+      <ul>
+        <li>喧嘩はどのくらいしている？</li>
+        <li>喧嘩はいつ多かった？</li>
+        <li>喧嘩の後どこへ行っている？</li>
+        <li>その時、自分は何を考えていた？</li>
+        <li>2025年1月の関係を振り返って</li>
+      </ul>
+      <div class="callout warning">
+        回答は「喧嘩候補」「外出候補」「反省/不安候補」のように候補として表現します。
+        相手の気持ち、関係ラベル、親密さ、診断的な結論は断定しません。
+      </div>
+    </section>
+
+    <section>
+      <h2>処理の流れ</h2>
+      <div class="flow">
+        <div class="flow-step">
+          <span class="num">1</span>
+          <div>
+            <strong>Chat UI</strong>
+            <p>ユーザーがGradioのシンプルなチャット画面で質問します。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">2</span>
+          <div>
+            <strong>Router</strong>
+            <p>質問文からintentを抽出します。複数intentも許可します。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">3</span>
+          <div>
+            <strong>Planner / Executor</strong>
+            <p>intentに応じて必要なadapter呼び出しを決め、mock adapterから根拠を集めます。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">4</span>
+          <div>
+            <strong>Analytics / Answer composer</strong>
+            <p>件数や日付を決定的に集計し、要約、集計、具体例、根拠、信頼度、注意を含む日本語回答を作ります。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">5</span>
+          <div>
+            <strong>Privacy guard</strong>
+            <p>回答後に禁止表現やpublic modeで出してはいけない情報を検査・匿名化します。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>主要コンポーネント</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>領域</th>
+              <th>役割</th>
+              <th>現在の状態</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>adapters/</code></td>
+              <td>上流lifelogアプリへの読み取り境界を定義します。</td>
+              <td>mock adapterのみ実装。実DB接続は未実装です。</td>
+            </tr>
+            <tr>
+              <td><code>agent/</code></td>
+              <td>質問分類、計画、実行、回答生成を担当します。</td>
+              <td>ルールベースrouterと決定的回答生成を実装済みです。</td>
+            </tr>
+            <tr>
+              <td><code>analytics/</code></td>
+              <td>喧嘩候補、外出候補、月次レビューなどを集計します。</td>
+              <td>Pythonで件数・日付・根拠強度を扱います。</td>
+            </tr>
+            <tr>
+              <td><code>db/</code></td>
+              <td>relationship DBのschemaとrepository層を提供します。</td>
+              <td>SQLite schema、migration、基本CRUDを実装済みです。</td>
+            </tr>
+            <tr>
+              <td><code>privacy/</code></td>
+              <td>禁止表現検出、public mode匿名化、安全な回答への変換を行います。</td>
+              <td>person name、relationship label、GPS、path、raw excerptの保護をテスト済みです。</td>
+            </tr>
+            <tr>
+              <td><code>ui/</code></td>
+              <td>ChatGPT風の最小Gradio UIを構成します。</td>
+              <td>チャット履歴、入力欄、送信ボタン、折りたたみ設定を実装済みです。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>データと安全境界</h2>
+      <ul>
+        <li>既存の<code>personal_lifelog_rag</code>と<code>notes_lifelog_rag</code>は上流ツールとして扱い、破壊的に編集しません。</li>
+        <li>relationship DBには、関係固有の派生情報とsource pointerを保存し、上流のraw private dataを丸ごとコピーしません。</li>
+        <li>外部API、cloud upload、モデル自動ダウンロードは使いません。</li>
+        <li>Gradioは<code>127.0.0.1</code>で起動し、<code>share=True</code>は禁止です。</li>
+        <li>public modeでは実人物名、恋人ラベル、LINE全文、メモ全文、正確GPS、顔crop、実写真、private pathを出しません。</li>
+      </ul>
+      <div class="callout ok">
+        重要な設計原則: relationship judgment AIではなく、relationship evidence review AIとして振る舞います。
+      </div>
+    </section>
+
+    <section>
+      <h2>SQLite schema</h2>
+      <p>relationship DBは次のテーブルを持ちます。</p>
+      <ul>
+        <li><code>relationship_profiles</code>: 手動設定された対象profile</li>
+        <li><code>relationship_events</code>: 喧嘩候補、仲直り候補、外出候補、感情メモ候補など</li>
+        <li><code>relationship_event_evidence</code>: source pointerと短い根拠情報</li>
+        <li><code>interaction_metrics</code>: メッセージ数、返信遅延、沈黙期間などの観測指標</li>
+        <li><code>post_conflict_activities</code>: 喧嘩候補後の外出・活動候補</li>
+        <li><code>relationship_review_actions</code>: verify、reject、correctなどの人間レビュー操作</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>起動とテスト</h2>
+      <p>conda環境で依存関係を入れたあと、ローカルUIを起動できます。</p>
+      <pre><code>conda activate relationship_lifelog_agent
+python -m relationship_lifelog_agent.app</code></pre>
+      <p>標準のURLは<code>http://127.0.0.1:7862</code>です。</p>
+      <pre><code>pytest</code></pre>
+    </section>
+
+    <section>
+      <h2>今後の拡張方針</h2>
+      <ul>
+        <li>実データ接続はadapter境界の内側に追加し、上流アプリは読み取り中心で扱います。</li>
+        <li>LLMを使う場合もlocal LLMをユーザー設定でのみ利用し、分類補助や要約補助に限定します。</li>
+        <li>顔identity、LINE speaker identity、relationship labelはAIで自動推定しません。</li>
+        <li>仕様、intent、DB schema、安全方針、UI挙動が変わったら、このHTML説明も更新します。</li>
+      </ul>
+    </section>
+
+    <footer>
+      <p>Last updated: 2026-05-23. This file is static and does not call external services.</p>
+    </footer>
+  </main>
+</body>
+</html>

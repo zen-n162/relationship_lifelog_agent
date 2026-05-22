@@ -132,6 +132,19 @@ relationship_lifelog_agent/
     run_eval.py
 ```
 
+## Documentation maintenance
+
+Keep `docs/application_overview.html` as the human-readable explanation of this application.
+
+When application specifications change, update this HTML file in the same change set. This includes changes to:
+
+1. Supported intents or example questions.
+2. Adapter behavior or upstream integration policy.
+3. SQLite schema or repository responsibilities.
+4. Privacy, safety, public/private mode, or forbidden-output behavior.
+5. Gradio UI behavior, launch defaults, or debug/settings behavior.
+6. Local LLM policy or any model-related constraints.
+
 ## GitHub update workflow
 
 When making changes in this repository:
