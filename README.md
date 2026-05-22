@@ -50,6 +50,24 @@ modified or deleted.
 pytest
 ```
 
+## Doctor
+
+Before using real upstream data, run the local doctor. It reports only
+counts-only and redacted diagnostics for config, relationship DB, upstream DB
+read-only access, adapter backend, privacy settings, and eval readiness.
+
+```bash
+python -m relationship_lifelog_agent.cli doctor
+python -m relationship_lifelog_agent.cli doctor --backend mock
+python -m relationship_lifelog_agent.cli doctor --backend upstream_readonly
+python -m relationship_lifelog_agent.cli doctor --format json
+```
+
+`WARN` means the app can continue but needs setup, such as missing upstream DB
+paths or missing manual profiles. `ERROR` means unsafe or unusable settings, such
+as `allow_gradio_share: true`, external API permission, model auto-download, or
+a failed read-only upstream DB connection. Keep `config.local.yaml` out of git.
+
 ## Eval
 
 The eval runner checks mock/private/public answer quality and safety. It covers

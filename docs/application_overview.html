@@ -340,6 +340,13 @@
             禁止表現、public redaction、raw data leakageを継続的に検査します。
           </p>
         </article>
+        <article class="card">
+          <h3>doctorで事前診断</h3>
+          <p>
+            実データ運用前にconfig、relationship DB、上流DBのread-only接続、
+            adapter backend、privacy設定、eval実行可否をredacted出力で確認します。
+          </p>
+        </article>
       </div>
     </section>
 
@@ -456,6 +463,11 @@
               <td><code>python eval/run_eval.py</code>でMarkdownまたはJSONの評価結果を出力します。upstream_readonly caseはローカル設定済みの場合だけ任意実行します。</td>
             </tr>
             <tr>
+              <td><code>doctor</code></td>
+              <td>config.local.yaml、relationship DB、上流DB、privacy設定を安全に診断します。</td>
+              <td><code>python -m relationship_lifelog_agent.cli doctor</code>でOK/WARN/ERRORを表示します。出力はcounts-onlyかつprivate pathをredactします。</td>
+            </tr>
+            <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
               <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、最小review actionを含む折りたたみ設定を実装済みです。</td>
@@ -499,6 +511,10 @@
       <pre><code>conda activate relationship_lifelog_agent
 python -m relationship_lifelog_agent.app</code></pre>
       <p>標準のURLは<code>http://127.0.0.1:7862</code>です。</p>
+      <p>実データ運用前にはdoctorで安全設定とread-only接続を確認できます。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli doctor
+python -m relationship_lifelog_agent.cli doctor --backend upstream_readonly
+python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
       <p>profileはCLIから手動作成できます。</p>
       <pre><code>python -m relationship_lifelog_agent.cli profile create \
   --profile-name "Aさん" \

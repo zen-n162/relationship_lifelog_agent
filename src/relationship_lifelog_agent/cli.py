@@ -10,11 +10,15 @@ from relationship_lifelog_agent.analytics.dry_run import run_relationship_dry_ru
 from relationship_lifelog_agent.app import main as app_main
 from relationship_lifelog_agent.config import load_config
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
+from relationship_lifelog_agent.doctor import render_doctor_json, render_doctor_text, run_doctor
 from relationship_lifelog_agent.profiles import load_profile_context
 
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if _is_doctor_command(args):
+        _doctor_main(args)
+        return
     if _is_profile_command(args):
         _profile_main(args)
         return
@@ -24,12 +28,28 @@ def main(argv: list[str] | None = None) -> None:
     app_main(args)
 
 
+def _is_doctor_command(args: list[str]) -> bool:
+    return "doctor" in args
+
+
 def _is_profile_command(args: list[str]) -> bool:
     return "profile" in args
 
 
 def _is_analyze_command(args: list[str]) -> bool:
     return "analyze" in args
+
+
+def _doctor_main(argv: list[str]) -> None:
+    parser = _build_doctor_parser()
+    args = parser.parse_args(argv)
+    report = run_doctor(config_path=args.config, backend=args.backend)
+    if args.format == "json":
+        print(render_doctor_json(report))
+    else:
+        print(render_doctor_text(report))
+    if report.has_errors:
+        raise SystemExit(1)
 
 
 def _profile_main(argv: list[str]) -> None:
@@ -132,6 +152,16 @@ def _build_analyze_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--mode", choices=("private", "public"), default="private")
     dry_run.add_argument("--output", default=None)
     dry_run.add_argument("--write", action="store_true", help="Explicitly save candidates into the relationship DB.")
+    return parser
+
+
+def _build_doctor_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Relationship Lifelog Agent doctor CLI.")
+    parser.add_argument("--config", default=None, help="Optional private config path.")
+    subparsers = parser.add_subparsers(dest="resource", required=True)
+    doctor = subparsers.add_parser("doctor", help="Diagnose local config, DBs, adapters, and privacy settings.")
+    doctor.add_argument("--backend", choices=("mock", "upstream_readonly"), default=None)
+    doctor.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
