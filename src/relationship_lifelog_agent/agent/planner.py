@@ -36,13 +36,19 @@ class QueryPlan:
     requires_private_evidence: bool = False
 
 
-def build_plan(route: RouteResult) -> QueryPlan:
+def build_plan(
+    route: RouteResult,
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> QueryPlan:
     primary_intent = _primary_supported_intent(route.intents)
     month = _extract_month(route.question)
+    calls = _with_date_range(_calls_for_intent(primary_intent, month=month), date_from=date_from, date_to=date_to)
     return QueryPlan(
         route=route,
         primary_intent=primary_intent,
-        calls=_calls_for_intent(primary_intent, month=month),
+        calls=calls,
         month=month,
         use_mock_adapters=True,
         requires_private_evidence=False,
@@ -108,3 +114,25 @@ def _month_range(month: str) -> tuple[str, str]:
     month_num = int(month_text)
     last_day = monthrange(year, month_num)[1]
     return f"{year}-{month_num:02d}-01", f"{year}-{month_num:02d}-{last_day:02d}"
+
+
+def _with_date_range(
+    calls: tuple[AdapterCall, ...],
+    *,
+    date_from: str | None,
+    date_to: str | None,
+) -> tuple[AdapterCall, ...]:
+    if not date_from and not date_to:
+        return calls
+    ranged: list[AdapterCall] = []
+    for call in calls:
+        if call.method.startswith("search_"):
+            kwargs = dict(call.kwargs)
+            if date_from:
+                kwargs["date_from"] = date_from
+            if date_to:
+                kwargs["date_to"] = date_to
+            ranged.append(AdapterCall(call.adapter, call.method, query=call.query, kwargs=kwargs))
+        else:
+            ranged.append(call)
+    return tuple(ranged)

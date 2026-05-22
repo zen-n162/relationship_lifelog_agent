@@ -33,6 +33,11 @@ The default local URL is:
 http://127.0.0.1:7862
 ```
 
+The Chat UI keeps the main screen simple: chat history, input, and send. The
+hidden settings accordion lets you choose `mock` or `upstream_readonly`, target
+profile, date range, post-conflict window days, private/public mode, and debug
+output. Debug output is off by default.
+
 ## Test
 
 ```bash
@@ -89,6 +94,8 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
 - Mock personal and notes lifelog adapters.
 - Opt-in `upstream_readonly` adapters that return source pointers and short controlled excerpts.
 - Manual `relationship_profiles` management from the CLI and UI settings.
+- Chat UI backend/profile/date-range selection with safe fallback when upstream
+  adapters or profiles are not configured.
 - Dry-run relationship event candidate extraction with explicit `--write` candidate saves.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.

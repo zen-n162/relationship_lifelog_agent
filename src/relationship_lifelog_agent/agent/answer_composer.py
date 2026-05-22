@@ -6,8 +6,12 @@ from relationship_lifelog_agent.privacy.guard import sanitize_answer
 from relationship_lifelog_agent.privacy.redaction import redact_evidence_for_mode
 
 
-def compose_answer(result: AnalysisResult, mode: str = "private") -> str:
-    evidence = [redact_evidence_for_mode(item, mode=mode) for item in result.evidence[:8]]
+def compose_answer(
+    result: AnalysisResult,
+    mode: str = "private",
+    person_names: list[str] | None = None,
+) -> str:
+    evidence = [redact_evidence_for_mode(item, mode=mode, person_names=person_names) for item in result.evidence[:8]]
     parts = [
         "要約:\n" + result.summary,
         "集計:\n" + _format_aggregate(result.aggregate),
@@ -18,7 +22,7 @@ def compose_answer(result: AnalysisResult, mode: str = "private") -> str:
         + f"(confidence={result.confidence:.2f}, evidence_strength={result.evidence_strength:.2f})",
         "注意:\n" + _collapsible_markdown("注意を表示", _format_cautions(result.cautions)),
     ]
-    return sanitize_answer("\n\n".join(parts), mode=mode)
+    return sanitize_answer("\n\n".join(parts), mode=mode, person_names=person_names)
 
 
 def _format_aggregate(values: dict[str, object]) -> str:

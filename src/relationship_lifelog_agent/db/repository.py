@@ -159,6 +159,8 @@ class RelationshipRepository:
         event_type: str | None = None,
         status: str | None = None,
         review_status: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
         limit: int = 100,
     ) -> list[RowDict]:
         clauses: list[str] = []
@@ -175,6 +177,12 @@ class RelationshipRepository:
         if review_status:
             clauses.append("review_status = ?")
             params.append(review_status)
+        if date_from:
+            clauses.append("event_date >= ?")
+            params.append(date_from)
+        if date_to:
+            clauses.append("event_date <= ?")
+            params.append(date_to)
         return self._select_many("relationship_events", clauses, params, order_by="event_date, id", limit=limit)
 
     def update_event(self, event_id: int, **fields: Any) -> int:

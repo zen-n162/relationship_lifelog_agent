@@ -359,7 +359,7 @@
           <span class="num">1</span>
           <div>
             <strong>Chat UI</strong>
-            <p>ユーザーがGradioのシンプルなチャット画面で質問します。</p>
+            <p>ユーザーがGradioのシンプルなチャット画面で質問します。設定Accordionでbackend、profile、date range、post-conflict window、private/public modeを選べます。</p>
           </div>
         </div>
         <div class="flow-step">
@@ -373,7 +373,7 @@
           <span class="num">3</span>
           <div>
             <strong>Planner / Executor</strong>
-            <p>intentに応じて必要なadapter呼び出しを決め、設定されたbackendから根拠を集めます。</p>
+            <p>intentに応じて必要なadapter呼び出しを決め、設定されたbackendとdate rangeから根拠を集めます。relationship DBに保存済みcandidateがあれば、それも候補として読みます。</p>
           </div>
         </div>
         <div class="flow-step">
@@ -413,7 +413,7 @@
             <tr>
               <td><code>agent/</code></td>
               <td>質問分類、計画、実行、回答生成を担当します。</td>
-              <td>ルールベースrouterと決定的回答生成を実装済みです。</td>
+              <td>ルールベースrouter、date range付きadapter計画、relationship DB保存済みcandidateの読み込み、決定的回答生成を実装済みです。</td>
             </tr>
             <tr>
               <td><code>analytics/</code></td>
@@ -433,7 +433,7 @@
             <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
-              <td>チャット履歴、入力欄、送信ボタン、profile選択を含む折りたたみ設定を実装済みです。</td>
+              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debugを含む折りたたみ設定を実装済みです。</td>
             </tr>
           </tbody>
         </table>

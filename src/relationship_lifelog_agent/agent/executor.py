@@ -20,6 +20,7 @@ from relationship_lifelog_agent.agent.planner import AdapterCall, QueryPlan, bui
 from relationship_lifelog_agent.agent.router import route_question
 from relationship_lifelog_agent.analytics.evidence_scoring import AnalysisResult, mean
 from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.profiles import (
     ProfileContext,
     is_relationship_profile_question,
@@ -38,15 +39,30 @@ def answer_question(
     memory: object | None = None,
     settings: Settings | None = None,
     profile_id: int | None | object = _PROFILE_ARG_UNSET,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    post_conflict_window_days: int | float | None = None,
 ) -> str:
     route = route_question(question)
     profile = _resolve_profile(settings, profile_id)
     if settings is not None and profile is None and is_relationship_profile_question(question):
         return compose_answer(_profile_missing_result(route.intents[0]), mode=mode)
     memory = memory or build_memory(settings)
-    plan = build_plan(route)
-    result = execute_plan(plan, memory, mode=mode, profile=profile)
-    return compose_answer(result, mode=mode)
+    clean_date_from = _clean_date(date_from)
+    clean_date_to = _clean_date(date_to)
+    plan = build_plan(route, date_from=clean_date_from, date_to=clean_date_to)
+    result = execute_plan(
+        plan,
+        memory,
+        mode=mode,
+        profile=profile,
+        settings=settings,
+        date_from=clean_date_from,
+        date_to=clean_date_to,
+        post_conflict_window_days=post_conflict_window_days,
+    )
+    person_names = [profile.profile_name] if profile else None
+    return compose_answer(result, mode=mode, person_names=person_names)
 
 
 def execute_plan(
@@ -54,9 +70,22 @@ def execute_plan(
     memory: object,
     mode: str = "private",
     profile: ProfileContext | None = None,
+    settings: Settings | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    post_conflict_window_days: int | float | None = None,
 ) -> AnalysisResult:
     results = _run_adapter_calls(plan, memory, mode=mode, profile=profile)
     results["_backend"] = [_backend(memory)]
+    results["_window_days"] = [_resolve_window_days(settings, post_conflict_window_days)]
+    if settings is not None and profile is not None:
+        results["relationship_db.events"] = _load_saved_relationship_events(
+            settings,
+            profile=profile,
+            mode=mode,
+            date_from=date_from,
+            date_to=date_to,
+        )
     intent = plan.primary_intent
     if intent == "conflict_frequency":
         result = _conflict_frequency(results)
@@ -171,7 +200,8 @@ def _conflict_timeline(results: dict[str, list[Any]]) -> AnalysisResult:
 
 
 def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
-    events = _adapter_items(results, "personal.search_events")
+    window_days = _window_days_from_results(results)
+    events = [*_adapter_items(results, "personal.search_events"), *_adapter_items(results, "relationship_db.events")]
     conflicts = sorted(
         [event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES],
         key=lambda item: item.date,
@@ -187,30 +217,35 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
         outings = sorted(_media_outing_candidates(results), key=lambda item: item.date)
     examples: list[str] = []
     days_after_values: list[int] = []
+    displayed_outings: list[EventEvidence] = []
     for outing in outings:
         days_after = _days_after_latest_conflict(outing.date, conflicts)
         if days_after is None:
             examples.append(f"{outing.date}: {outing.summary}")
+            displayed_outings.append(outing)
+            continue
+        if days_after > window_days:
             continue
         days_after_values.append(days_after)
         examples.append(f"{outing.date}: 喧嘩候補の {days_after} 日後に外出候補 - {outing.summary}")
-    evidence = _evidence_items([*conflicts, *outings, *_adapter_items(results, "personal.search_line"), *media, *_adapter_items(results, "notes.search_notes")])
+        displayed_outings.append(outing)
+    evidence = _evidence_items([*conflicts, *displayed_outings, *_adapter_items(results, "personal.search_line"), *media, *_adapter_items(results, "notes.search_notes")])
     summary = "喧嘩候補の後に外出候補があります。ただし、それが仲直りだったとは断定しません。"
-    if not conflicts and not outings:
+    if not conflicts and not displayed_outings:
         summary = _no_candidate_summary(_backend_from_results(results), "喧嘩後の外出候補")
     return AnalysisResult(
         intent="post_conflict_activity",
         summary=summary,
         aggregate={
-            "post_conflict_window_days": 14,
+            "post_conflict_window_days": window_days,
             "conflict_candidates": len(conflicts),
-            "activity_candidates": len(outings),
+            "activity_candidates": len(displayed_outings),
             "days_after_conflict": ", ".join(str(value) for value in days_after_values) or "unknown",
         },
         examples=examples,
         evidence=evidence,
-        confidence=mean([item.confidence for item in [*outings, *media]]),
-        evidence_strength=mean([item.evidence_strength for item in outings] + [item.confidence for item in media]),
+        confidence=mean([item.confidence for item in [*displayed_outings, *media]]),
+        evidence_strength=mean([item.evidence_strength for item in displayed_outings] + [item.confidence for item in media]),
         cautions=[
             "写真や場所だけでは仲直り確定とは言えません。",
             "外出候補は、LINE・場所・メモなどの追加根拠と合わせて確認する必要があります。",
@@ -222,22 +257,28 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
 def _emotional_note_lookup(results: dict[str, list[Any]]) -> AnalysisResult:
     notes = [item for item in _adapter_items(results, "notes.search_notes") if isinstance(item, NoteEvidence)]
     thoughts = [item for item in _adapter_items(results, "notes.search_thoughts") if isinstance(item, ThoughtEvidence)]
-    evidence = _evidence_items([*notes, *thoughts])
+    saved_notes = [
+        item
+        for item in _adapter_items(results, "relationship_db.events")
+        if isinstance(item, EventEvidence) and item.event_type == "emotional_note"
+    ]
+    evidence = _evidence_items([*notes, *thoughts, *saved_notes])
     return AnalysisResult(
         intent="emotional_note_lookup",
         summary="自分側のメモ候補には、反省や不安を含む振り返りがあります。",
         aggregate={
             "note_candidates": len(notes),
             "thought_candidates": len(thoughts),
-            "observed_dates": ", ".join(item.date for item in [*notes, *thoughts]),
+            "saved_event_candidates": len(saved_notes),
+            "observed_dates": ", ".join(item.date for item in [*notes, *thoughts, *saved_notes]),
         },
         examples=[
             f"{item.date}: {item.summary}"
-            for item in [*notes, *thoughts][:4]
+            for item in [*notes, *thoughts, *saved_notes][:4]
         ],
         evidence=evidence,
-        confidence=mean([item.confidence for item in [*notes, *thoughts]]),
-        evidence_strength=mean([item.confidence for item in [*notes, *thoughts]]),
+        confidence=mean([item.confidence for item in [*notes, *thoughts, *saved_notes]]),
+        evidence_strength=mean([item.evidence_strength for item in [*notes, *thoughts, *saved_notes]]),
         cautions=[
             "メモは自分側の記録候補として扱い、歌詞・引用・創作の可能性には注意します。",
             "相手の内面はメモから断定しません。",
@@ -246,7 +287,7 @@ def _emotional_note_lookup(results: dict[str, list[Any]]) -> AnalysisResult:
 
 
 def _monthly_relationship_review(results: dict[str, list[Any]], month: str) -> AnalysisResult:
-    events = _adapter_items(results, "personal.search_events")
+    events = [*_adapter_items(results, "personal.search_events"), *_adapter_items(results, "relationship_db.events")]
     conflicts = [event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES]
     outings = [event for event in events if isinstance(event, EventEvidence) and event.event_type == "date_or_outing"]
     media = _adapter_items(results, "personal.search_media")
@@ -324,6 +365,51 @@ def _resolve_profile(settings: Settings | None, profile_id: int | None | object)
     return load_profile_context(settings, int(profile_id))
 
 
+def _load_saved_relationship_events(
+    settings: Settings,
+    *,
+    profile: ProfileContext,
+    mode: str,
+    date_from: str | None,
+    date_to: str | None,
+) -> list[EventEvidence]:
+    repo = RelationshipRepository(settings.paths.relationship_db)
+    rows = repo.list_events(
+        profile_id=profile.id,
+        status="candidate",
+        date_from=date_from,
+        date_to=date_to,
+        limit=100,
+    )
+    events: list[EventEvidence] = []
+    for row in rows:
+        evidence_rows = repo.list_evidence(event_id=int(row["id"]), limit=8)
+        pointer = _first_source_pointer(evidence_rows, fallback=f"relationship_event:{row['id']}")
+        source_type = _first_source_type(evidence_rows, fallback="manual")
+        events.append(
+            EventEvidence(
+                source_id=f"relationship-db-event-{row['id']}",
+                date=str(row["event_date"]),
+                role="primary",
+                summary=_safe_db_text(str(row["summary"]), mode=mode, person_names=[profile.profile_name]),
+                excerpt=None,
+                confidence=float(row["confidence"]),
+                evidence_strength=float(row["evidence_strength"]),
+                sensitivity="private",
+                source_pointer=pointer,
+                event_type=str(row["event_type"]),
+                review_status=str(row["review_status"]),
+                severity=int(row["severity"]),
+                metadata={
+                    "source": "relationship_db",
+                    "relationship_event_id": int(row["id"]),
+                    "primary_source_type": source_type,
+                },
+            )
+        )
+    return events
+
+
 def _apply_profile_filters(call: AdapterCall, kwargs: dict[str, Any], profile: ProfileContext | None) -> None:
     if profile is None:
         return
@@ -349,7 +435,7 @@ def _with_profile_context(result: AnalysisResult, profile: ProfileContext | None
 
 
 def _relationship_event_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:
-    events = _adapter_items(results, "personal.search_events")
+    events = [*_adapter_items(results, "personal.search_events"), *_adapter_items(results, "relationship_db.events")]
     candidates = [
             event
             for event in events
@@ -477,6 +563,53 @@ def _backend_from_results(results: dict[str, list[Any]]) -> str:
     if values:
         return str(values[0])
     return "mock"
+
+
+def _window_days_from_results(results: dict[str, list[Any]]) -> int:
+    values = results.get("_window_days", [])
+    if not values:
+        return 14
+    try:
+        return max(1, int(values[0]))
+    except (TypeError, ValueError):
+        return 14
+
+
+def _resolve_window_days(settings: Settings | None, value: int | float | None) -> int:
+    if value is not None:
+        return max(1, int(value))
+    if settings is not None:
+        return max(1, int(settings.relationship.post_conflict_window_days))
+    return 14
+
+
+def _clean_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _first_source_pointer(evidence_rows: list[dict[str, Any]], *, fallback: str) -> str:
+    for row in evidence_rows:
+        pointer = row.get("source_pointer")
+        if pointer:
+            return str(pointer)
+    return fallback
+
+
+def _first_source_type(evidence_rows: list[dict[str, Any]], *, fallback: str) -> str:
+    for row in evidence_rows:
+        source_type = row.get("source_type")
+        if source_type:
+            return str(source_type)
+    return fallback
+
+
+def _safe_db_text(text: str, *, mode: str, person_names: list[str]) -> str:
+    from relationship_lifelog_agent.privacy.guard import sanitize_answer
+
+    return sanitize_answer(text, mode=mode, person_names=person_names)
 
 
 def _memory_warnings(memory: object) -> list[str]:
