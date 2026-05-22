@@ -136,10 +136,13 @@ def validate_local_safety(settings: Settings) -> None:
         raise ValueError("upstream_readonly requires allow_sqlite_readonly=true.")
 
 
-def gradio_launch_kwargs(settings: Settings) -> dict[str, Any]:
+def gradio_launch_kwargs(settings: Settings, *, port: int | None = None) -> dict[str, Any]:
+    server_port = settings.app.port if port is None else port
+    if server_port < 1 or server_port > 65535:
+        raise ValueError("Port must be between 1 and 65535.")
     return {
         "server_name": settings.app.host,
-        "server_port": settings.app.port,
+        "server_port": server_port,
         "share": False,
         "allowed_paths": [],
         "footer_links": [],

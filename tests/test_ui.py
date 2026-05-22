@@ -1,4 +1,5 @@
 from relationship_lifelog_agent.agent.executor import answer_question
+from relationship_lifelog_agent.app import build_arg_parser
 from relationship_lifelog_agent.config import AdapterSettings, PathSettings, RelationshipSettings, Settings, gradio_launch_kwargs
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import detect_answer_safety_violations
@@ -15,6 +16,22 @@ def test_chat_ui_builds_with_safe_defaults() -> None:
     assert settings.ui.show_debug_by_default is False
     assert kwargs["server_name"] == "127.0.0.1"
     assert kwargs["share"] is False
+
+
+def test_chat_ui_launch_port_can_be_overridden_per_run() -> None:
+    settings = Settings()
+    kwargs = gradio_launch_kwargs(settings, port=7863)
+
+    assert kwargs["server_name"] == "127.0.0.1"
+    assert kwargs["server_port"] == 7863
+    assert kwargs["share"] is False
+
+
+def test_app_parser_accepts_runtime_port() -> None:
+    args = build_arg_parser().parse_args(["--port", "7863", "--smoke"])
+
+    assert args.port == 7863
+    assert args.smoke is True
 
 
 def test_answer_uses_collapsible_markdown_sections() -> None:

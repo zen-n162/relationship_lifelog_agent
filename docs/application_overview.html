@@ -552,6 +552,8 @@
       <pre><code>conda activate relationship_lifelog_agent
 python -m relationship_lifelog_agent.app</code></pre>
       <p>標準のURLは<code>http://127.0.0.1:7862</code>です。</p>
+      <p>起動時だけ別のローカルポートを使う場合は、<code>--port</code>を指定します。hostは<code>127.0.0.1</code>のまま、<code>share=True</code>は無効のままです。</p>
+      <pre><code>python -m relationship_lifelog_agent.app --port 7863</code></pre>
       <p>実データ運用前にはdoctorで安全設定とread-only接続を確認できます。</p>
       <pre><code>python -m relationship_lifelog_agent.cli doctor
 python -m relationship_lifelog_agent.cli doctor --backend upstream_readonly

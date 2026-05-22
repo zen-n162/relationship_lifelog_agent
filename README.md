@@ -33,6 +33,14 @@ The default local URL is:
 http://127.0.0.1:7862
 ```
 
+To use another local port for one run:
+
+```bash
+python -m relationship_lifelog_agent.app --port 7863
+```
+
+The host remains `127.0.0.1` and Gradio `share=True` remains disabled.
+
 The Chat UI keeps the main screen simple: chat history, input, and send. The
 hidden settings accordion lets you choose `mock` or `upstream_readonly`, target
 profile, date range, post-conflict window days, private/public mode, and debug

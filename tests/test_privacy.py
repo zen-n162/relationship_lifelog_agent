@@ -85,6 +85,14 @@ def test_gradio_launch_kwargs_never_enable_share() -> None:
     assert kwargs["enable_monitoring"] is False
 
 
+def test_gradio_launch_port_override_keeps_safe_host_and_share() -> None:
+    settings = Settings()
+    kwargs = gradio_launch_kwargs(settings, port=7863)
+    assert kwargs["server_name"] == "127.0.0.1"
+    assert kwargs["server_port"] == 7863
+    assert kwargs["share"] is False
+
+
 def test_unsafe_config_is_rejected() -> None:
     with pytest.raises(ValueError):
         validate_local_safety(Settings(app=AppSettings(allow_gradio_share=True)))
