@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from relationship_lifelog_agent.adapters.mock import MockRelationshipMemory
+from relationship_lifelog_agent.adapters.types import MonthlyReflection, NoteEvidence, PostConflictActivity, RelationshipEvent
 from relationship_lifelog_agent.analytics.conflict import conflict_frequency
 from relationship_lifelog_agent.analytics.evidence_scoring import AnalysisResult
 from relationship_lifelog_agent.analytics.outing import post_conflict_activity
@@ -34,3 +35,37 @@ def monthly_relationship_review(memory: MockRelationshipMemory, month: str) -> A
             "相手の内面や関係ラベルは記録から推定しません。",
         ],
     )
+
+
+def build_monthly_relationship_summary(
+    *,
+    month: str,
+    conflict_candidates: list[RelationshipEvent],
+    reconciliation_candidates: list[RelationshipEvent],
+    post_conflict_outings: list[PostConflictActivity],
+    emotional_notes: list[NoteEvidence],
+    monthly_reflection: MonthlyReflection | None = None,
+) -> dict[str, object]:
+    month_conflicts = [item for item in conflict_candidates if item.date.startswith(month)]
+    month_reconciliations = [item for item in reconciliation_candidates if item.date.startswith(month)]
+    month_outings = [item for item in post_conflict_outings if item.date.startswith(month)]
+    month_notes = [item for item in emotional_notes if item.date.startswith(month)]
+    summary_parts = [
+        f"{month} の候補集計",
+        f"喧嘩候補 {len([item for item in month_conflicts if item.event_type == 'conflict'])} 件",
+        f"軽いすれ違い候補 {len([item for item in month_conflicts if item.event_type == 'minor_misunderstanding'])} 件",
+        f"仲直り候補 {len(month_reconciliations)} 件",
+        f"喧嘩後の外出候補 {len(month_outings)} 件",
+        f"感情メモ候補 {len(month_notes)} 件",
+    ]
+    if monthly_reflection is not None:
+        summary_parts.append("月次振り返り候補あり")
+    return {
+        "month": month,
+        "summary": "、".join(summary_parts) + "。",
+        "conflict_candidates": len([item for item in month_conflicts if item.event_type == "conflict"]),
+        "minor_misunderstanding_candidates": len([item for item in month_conflicts if item.event_type == "minor_misunderstanding"]),
+        "reconciliation_candidates": len(month_reconciliations),
+        "post_conflict_outing_candidates": len(month_outings),
+        "emotional_note_candidates": len(month_notes),
+    }

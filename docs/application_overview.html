@@ -319,6 +319,13 @@
           </p>
         </article>
         <article class="card">
+          <h3>dry-runで候補抽出</h3>
+          <p>
+            実データまたはmock dataからrelationship event candidatesを抽出し、
+            Markdown reportだけを生成します。dry-runではrelationship DBへ候補を書き込みません。
+          </p>
+        </article>
+        <article class="card">
           <h3>慎重に回答する</h3>
           <p>
             件数、日付、候補の集計はPythonで計算します。喧嘩や仲直りを断定せず、
@@ -411,7 +418,7 @@
             <tr>
               <td><code>analytics/</code></td>
               <td>喧嘩候補、外出候補、月次レビューなどを集計します。</td>
-              <td>Pythonで件数・日付・根拠強度を扱います。</td>
+              <td>Pythonで件数・日付・根拠強度を扱い、dry-run候補抽出reportを生成します。</td>
             </tr>
             <tr>
               <td><code>db/</code></td>
@@ -473,6 +480,13 @@ python -m relationship_lifelog_agent.app</code></pre>
   --person-source-id "plr:person:4" \
   --line-speaker-source-id "plr:line_speaker:2" \
   --relationship-label "partner"</code></pre>
+      <p>relationship event candidatesはdry-runでMarkdown reportとして生成できます。dry-runではDBに候補を書き込みません。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli analyze dry-run \
+  --profile-id 1 \
+  --date-from 2025-01-01 \
+  --date-to 2025-03-31 \
+  --backend mock \
+  --output data/exports/dry_run_relationship_2025Q1.md</code></pre>
       <pre><code>pytest</code></pre>
     </section>
 
