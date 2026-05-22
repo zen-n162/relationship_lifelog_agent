@@ -1,0 +1,42 @@
+app:
+  name: relationship_lifelog_agent
+  mode: private
+  host: 127.0.0.1
+  port: 7862
+  allow_external_api: false
+  allow_model_auto_download: false
+  allow_gradio_share: false
+
+paths:
+  personal_lifelog_rag: "~/MyApplication/personal_lifelog_rag"
+  notes_lifelog_rag: "~/MyApplication/notes_lifelog_rag"
+  relationship_db: "~/MyApplication/relationship_lifelog_agent/data/relationship.sqlite"
+
+ui:
+  style: chatgpt_like
+  show_sidebar: false
+  show_debug_by_default: false
+  show_evidence_collapsed: true
+  max_evidence_items: 8
+
+relationship:
+  default_profile_id: 1
+  post_conflict_window_days: 14
+  conflict_min_confidence: 0.45
+  evidence_min_strength_for_answer: 0.35
+  require_manual_partner_label: true
+
+privacy:
+  public_mode_enabled: false
+  redact_exact_gps: true
+  redact_line_full_text: true
+  redact_note_full_text: true
+  allow_short_quotes_private: true
+  max_private_quote_chars: 120
+  forbid_public_relationship_labels: true
+
+llm:
+  provider: local
+  model: null
+  temperature: 0.2
+  max_context_items: 30

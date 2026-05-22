@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+import sqlite3
+from typing import Any
+
+from relationship_lifelog_agent.adapters.types import (
+    EvidenceItem,
+    PostConflictActivity,
+    RelationshipEvent,
+)
+from relationship_lifelog_agent.db.migrate import initialize_database
+
+
+RowDict = dict[str, Any]
+
+
+class RelationshipRepository:
+    """CRUD access for the relationship-local SQLite database only."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = initialize_database(db_path)
+
+    def connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    # relationship_profiles
+
+    def create_profile(
+        self,
+        profile_name: str,
+        relationship_label: str | None = None,
+        *,
+        person_source_id: str | None = None,
+        line_speaker_source_id: str | None = None,
+        label_source: str = "manual",
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        visibility: str = "private",
+        notes: str | None = None,
+    ) -> int:
+        values = {
+            "profile_name": profile_name,
+            "person_source_id": person_source_id,
+            "line_speaker_source_id": line_speaker_source_id,
+            "relationship_label": relationship_label,
+            "label_source": label_source,
+            "valid_from": valid_from,
+            "valid_to": valid_to,
+            "visibility": visibility,
+            "notes": notes,
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "relationship_profiles", values)
+
+    def get_profile(self, profile_id: int) -> RowDict | None:
+        return self._get_by_id("relationship_profiles", profile_id)
+
+    def list_profiles(self, *, visibility: str | None = None, limit: int = 100) -> list[RowDict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if visibility:
+            clauses.append("visibility = ?")
+            params.append(visibility)
+        return self._select_many("relationship_profiles", clauses, params, order_by="id", limit=limit)
+
+    def update_profile(self, profile_id: int, **fields: Any) -> int:
+        allowed = {
+            "profile_name",
+            "person_source_id",
+            "line_speaker_source_id",
+            "relationship_label",
+            "label_source",
+            "valid_from",
+            "valid_to",
+            "visibility",
+            "notes",
+        }
+        return self._update("relationship_profiles", profile_id, allowed, fields)
+
+    def delete_profile(self, profile_id: int) -> int:
+        return self._delete("relationship_profiles", profile_id)
+
+    # relationship_events
+
+    def create_event(
+        self,
+        *,
+        event_type: str,
+        event_date: str,
+        summary: str,
+        profile_id: int | None = None,
+        review_status: str = "candidate",
+        confidence: float = 0.5,
+        evidence_strength: float = 0.5,
+        severity: int = 0,
+        generated_by_model: str | None = None,
+        prompt_version: str | None = None,
+    ) -> int:
+        values = {
+            "profile_id": profile_id,
+            "event_type": event_type,
+            "event_date": event_date,
+            "summary": summary,
+            "review_status": review_status,
+            "confidence": confidence,
+            "evidence_strength": evidence_strength,
+            "severity": severity,
+            "generated_by_model": generated_by_model,
+            "prompt_version": prompt_version,
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "relationship_events", values)
+
+    def save_event(self, event: RelationshipEvent, profile_id: int | None = None) -> int:
+        values = {
+            "profile_id": profile_id,
+            "event_type": event.event_type,
+            "event_date": event.date,
+            "summary": event.summary,
+            "review_status": event.review_status,
+            "confidence": event.confidence,
+            "evidence_strength": event.evidence_strength,
+            "severity": event.severity,
+        }
+        with self.connect() as conn:
+            event_id = self._insert(conn, "relationship_events", values)
+            for item in event.evidence:
+                self.save_evidence(item, event_id=event_id, conn=conn)
+            return event_id
+
+    def get_event(self, event_id: int) -> RowDict | None:
+        return self._get_by_id("relationship_events", event_id)
+
+    def list_events(
+        self,
+        *,
+        profile_id: int | None = None,
+        event_type: str | None = None,
+        review_status: str | None = None,
+        limit: int = 100,
+    ) -> list[RowDict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if profile_id is not None:
+            clauses.append("profile_id = ?")
+            params.append(profile_id)
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if review_status:
+            clauses.append("review_status = ?")
+            params.append(review_status)
+        return self._select_many("relationship_events", clauses, params, order_by="event_date, id", limit=limit)
+
+    def update_event(self, event_id: int, **fields: Any) -> int:
+        allowed = {
+            "profile_id",
+            "event_type",
+            "event_date",
+            "summary",
+            "review_status",
+            "confidence",
+            "evidence_strength",
+            "severity",
+            "generated_by_model",
+            "prompt_version",
+        }
+        return self._update("relationship_events", event_id, allowed, fields)
+
+    def delete_event(self, event_id: int) -> int:
+        return self._delete("relationship_events", event_id)
+
+    # relationship_event_evidence
+
+    def create_evidence(
+        self,
+        *,
+        event_id: int,
+        source_type: str,
+        source_id: str,
+        summary: str,
+        source_date: str | None = None,
+        role: str = "supporting",
+        excerpt: str | None = None,
+        confidence: float = 0.5,
+    ) -> int:
+        values = {
+            "event_id": event_id,
+            "source_type": source_type,
+            "source_id": source_id,
+            "source_date": source_date,
+            "role": role,
+            "summary": summary,
+            "excerpt": excerpt,
+            "confidence": confidence,
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "relationship_event_evidence", values)
+
+    def save_evidence(
+        self,
+        evidence: EvidenceItem,
+        event_id: int,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        values = {
+            "event_id": event_id,
+            "source_type": evidence.source_type,
+            "source_id": evidence.source_id,
+            "source_date": evidence.date,
+            "role": evidence.role,
+            "summary": evidence.summary,
+            "excerpt": evidence.excerpt,
+            "confidence": evidence.confidence,
+        }
+        if conn is not None:
+            return self._insert(conn, "relationship_event_evidence", values)
+        with self.connect() as owned_conn:
+            return self._insert(owned_conn, "relationship_event_evidence", values)
+
+    def get_evidence(self, evidence_id: int) -> RowDict | None:
+        return self._get_by_id("relationship_event_evidence", evidence_id)
+
+    def list_evidence(self, *, event_id: int, limit: int = 100) -> list[RowDict]:
+        return self._select_many(
+            "relationship_event_evidence",
+            ["event_id = ?"],
+            [event_id],
+            order_by="id",
+            limit=limit,
+        )
+
+    def update_evidence(self, evidence_id: int, **fields: Any) -> int:
+        allowed = {
+            "event_id",
+            "source_type",
+            "source_id",
+            "source_date",
+            "role",
+            "summary",
+            "excerpt",
+            "confidence",
+        }
+        return self._update("relationship_event_evidence", evidence_id, allowed, fields)
+
+    def delete_evidence(self, evidence_id: int) -> int:
+        return self._delete("relationship_event_evidence", evidence_id)
+
+    # interaction_metrics
+
+    def create_interaction_metric(
+        self,
+        *,
+        metric_date: str,
+        metric_type: str,
+        metric_value: float,
+        profile_id: int | None = None,
+        source_pointer: str | None = None,
+    ) -> int:
+        values = {
+            "profile_id": profile_id,
+            "metric_date": metric_date,
+            "metric_type": metric_type,
+            "metric_value": metric_value,
+            "source_pointer": source_pointer,
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "interaction_metrics", values)
+
+    def get_interaction_metric(self, metric_id: int) -> RowDict | None:
+        return self._get_by_id("interaction_metrics", metric_id)
+
+    def list_interaction_metrics(
+        self,
+        *,
+        profile_id: int | None = None,
+        metric_type: str | None = None,
+        limit: int = 100,
+    ) -> list[RowDict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if profile_id is not None:
+            clauses.append("profile_id = ?")
+            params.append(profile_id)
+        if metric_type:
+            clauses.append("metric_type = ?")
+            params.append(metric_type)
+        return self._select_many("interaction_metrics", clauses, params, order_by="metric_date, id", limit=limit)
+
+    def update_interaction_metric(self, metric_id: int, **fields: Any) -> int:
+        allowed = {"profile_id", "metric_date", "metric_type", "metric_value", "source_pointer"}
+        return self._update("interaction_metrics", metric_id, allowed, fields)
+
+    def delete_interaction_metric(self, metric_id: int) -> int:
+        return self._delete("interaction_metrics", metric_id)
+
+    # post_conflict_activities
+
+    def create_post_conflict_activity(
+        self,
+        *,
+        activity_date: str,
+        days_after_conflict: int,
+        activity_type: str,
+        conflict_event_id: int | None = None,
+        activity_event_id: int | None = None,
+        place_label: str | None = None,
+        confidence: float = 0.5,
+        evidence_strength: float = 0.5,
+    ) -> int:
+        values = {
+            "conflict_event_id": conflict_event_id,
+            "activity_event_id": activity_event_id,
+            "activity_date": activity_date,
+            "days_after_conflict": days_after_conflict,
+            "place_label": place_label,
+            "activity_type": activity_type,
+            "confidence": confidence,
+            "evidence_strength": evidence_strength,
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "post_conflict_activities", values)
+
+    def save_post_conflict_activity(self, activity: PostConflictActivity) -> int:
+        return self.create_post_conflict_activity(
+            conflict_event_id=_int_or_none(activity.conflict_event_id),
+            activity_event_id=_int_or_none(activity.activity_event_id),
+            activity_date=activity.date,
+            days_after_conflict=activity.days_after_conflict,
+            place_label=activity.place_label,
+            activity_type=activity.activity_type,
+            confidence=activity.confidence,
+            evidence_strength=activity.evidence_strength,
+        )
+
+    def get_post_conflict_activity(self, activity_id: int) -> RowDict | None:
+        return self._get_by_id("post_conflict_activities", activity_id)
+
+    def list_post_conflict_activities(
+        self,
+        *,
+        conflict_event_id: int | None = None,
+        limit: int = 100,
+    ) -> list[RowDict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if conflict_event_id is not None:
+            clauses.append("conflict_event_id = ?")
+            params.append(conflict_event_id)
+        return self._select_many("post_conflict_activities", clauses, params, order_by="activity_date, id", limit=limit)
+
+    def update_post_conflict_activity(self, activity_id: int, **fields: Any) -> int:
+        allowed = {
+            "conflict_event_id",
+            "activity_event_id",
+            "activity_date",
+            "days_after_conflict",
+            "place_label",
+            "activity_type",
+            "confidence",
+            "evidence_strength",
+        }
+        return self._update("post_conflict_activities", activity_id, allowed, fields)
+
+    def delete_post_conflict_activity(self, activity_id: int) -> int:
+        return self._delete("post_conflict_activities", activity_id)
+
+    # relationship_review_actions
+
+    def create_review_action(self, *, event_id: int | None, action: str, note: str | None = None) -> int:
+        values = {"event_id": event_id, "action": action, "note": note}
+        with self.connect() as conn:
+            return self._insert(conn, "relationship_review_actions", values)
+
+    def save_review_action(self, event_id: int, action: str, note: str | None = None) -> int:
+        return self.create_review_action(event_id=event_id, action=action, note=note)
+
+    def get_review_action(self, action_id: int) -> RowDict | None:
+        return self._get_by_id("relationship_review_actions", action_id)
+
+    def list_review_actions(self, *, event_id: int | None = None, limit: int = 100) -> list[RowDict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if event_id is not None:
+            clauses.append("event_id = ?")
+            params.append(event_id)
+        return self._select_many("relationship_review_actions", clauses, params, order_by="id", limit=limit)
+
+    def update_review_action(self, action_id: int, **fields: Any) -> int:
+        allowed = {"event_id", "action", "note"}
+        return self._update("relationship_review_actions", action_id, allowed, fields)
+
+    def delete_review_action(self, action_id: int) -> int:
+        return self._delete("relationship_review_actions", action_id)
+
+    # shared helpers
+
+    def _get_by_id(self, table: str, row_id: int) -> RowDict | None:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
+        return _row_to_dict(row)
+
+    def _select_many(
+        self,
+        table: str,
+        clauses: list[str],
+        params: list[Any],
+        *,
+        order_by: str,
+        limit: int,
+    ) -> list[RowDict]:
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM {table}{where} ORDER BY {order_by} LIMIT ?"
+        with self.connect() as conn:
+            rows = conn.execute(sql, (*params, limit)).fetchall()
+        return [_row_to_dict(row) for row in rows if row is not None]
+
+    @staticmethod
+    def _insert(conn: sqlite3.Connection, table: str, values: Mapping[str, Any]) -> int:
+        columns = ", ".join(values.keys())
+        placeholders = ", ".join("?" for _ in values)
+        cursor = conn.execute(
+            f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+            tuple(values.values()),
+        )
+        return int(cursor.lastrowid)
+
+    def _update(self, table: str, row_id: int, allowed: set[str], fields: Mapping[str, Any]) -> int:
+        unknown = set(fields) - allowed
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unsupported fields for {table}: {names}")
+        if not fields:
+            return 0
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        sql = f"UPDATE {table} SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        with self.connect() as conn:
+            cursor = conn.execute(sql, (*fields.values(), row_id))
+            return int(cursor.rowcount)
+
+    def _delete(self, table: str, row_id: int) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+            return int(cursor.rowcount)
+
+
+def _row_to_dict(row: sqlite3.Row | None) -> RowDict | None:
+    if row is None:
+        return None
+    return dict(row)
+
+
+def _int_or_none(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        return None

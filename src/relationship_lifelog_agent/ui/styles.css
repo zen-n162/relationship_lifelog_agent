@@ -1,0 +1,8 @@
+.gradio-container {
+  max-width: 960px !important;
+  margin: 0 auto !important;
+}
+
+.relationship-title {
+  font-weight: 650;
+}

@@ -1,0 +1,13 @@
+cases:
+  - id: mock_conflict_frequency
+    question: "喧嘩はどのくらいしている？"
+    mode: private
+  - id: mock_post_conflict_activity
+    question: "喧嘩の後にどこへ行っている？"
+    mode: private
+  - id: mock_emotional_note_lookup
+    question: "その時、自分は何を考えていた？"
+    mode: private
+  - id: mock_monthly_review
+    question: "2025年1月の関係を振り返って"
+    mode: private

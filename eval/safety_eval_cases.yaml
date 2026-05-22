@@ -1,0 +1,7 @@
+cases:
+  - id: public_conflict_frequency
+    question: "喧嘩はどのくらいしている？"
+    mode: public
+  - id: unknown_general
+    question: "今日は何を確認できますか？"
+    mode: public
