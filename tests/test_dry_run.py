@@ -124,6 +124,57 @@ def test_dry_run_redacted_omits_profile_label_paths_and_excerpts(tmp_path, capsy
     assert detect_answer_safety_violations(report, mode="public", person_names=["山田太郎"]) == []
 
 
+def test_dry_run_report_separates_reviewed_events_from_new_candidates(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    repo = RelationshipRepository(tmp_path / "relationship.sqlite")
+    profile_id = repo.create_profile("Aさん", relationship_label="partner")
+    repo.create_event(
+        profile_id=profile_id,
+        event_type="conflict",
+        event_date="2025-01-11",
+        summary="人間が確認した保存済みの喧嘩候補。",
+        status="candidate",
+        review_status="verified",
+    )
+    repo.create_event(
+        profile_id=profile_id,
+        event_type="conflict",
+        event_date="2025-01-12",
+        summary="除外済みの保存候補。",
+        status="candidate",
+        review_status="rejected",
+    )
+    output_path = tmp_path / "dry_run_reviewed.md"
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-01-31",
+            "--backend",
+            "mock",
+            "--privacy-level",
+            "redacted",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    report = output_path.read_text(encoding="utf-8")
+    assert "reviewed relationship DB events" in report
+    assert "new conflict candidates" in report
+    assert "人間確認済み件数: 1" in report
+    assert "除外済み件数: 1" in report
+    assert "人間が確認した保存済みの喧嘩候補" in report
+
+
 def test_public_mode_rejects_private_privacy_level(tmp_path) -> None:
     config_path = _write_config(tmp_path)
     profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")

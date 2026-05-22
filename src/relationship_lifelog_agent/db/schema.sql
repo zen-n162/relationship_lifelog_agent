@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS relationship_events (
     'other'
   )),
   CHECK (status IN ('candidate', 'hidden', 'archived')),
-  CHECK (review_status IN ('unreviewed', 'verified', 'corrected', 'rejected')),
+  CHECK (review_status IN ('unreviewed', 'verified', 'corrected', 'needs_reanalysis', 'rejected')),
   CHECK (confidence >= 0.0 AND confidence <= 1.0),
   CHECK (evidence_strength >= 0.0 AND evidence_strength <= 1.0),
   CHECK (severity >= 0 AND severity <= 4)

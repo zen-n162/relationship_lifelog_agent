@@ -84,5 +84,5 @@ def _event_updates_for_action(action: str) -> dict[str, object]:
     if action == "mark_as_reconciled":
         return {"event_type": "reconciliation", "review_status": "verified", "status": "candidate"}
     if action == "needs_reanalysis":
-        return {"review_status": "unreviewed", "status": "candidate"}
+        return {"review_status": "needs_reanalysis", "status": "candidate"}
     raise ValueError(f"unsupported review action: {action}")

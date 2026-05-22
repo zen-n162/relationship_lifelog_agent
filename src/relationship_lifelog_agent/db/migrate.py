@@ -59,7 +59,11 @@ def _ensure_relationship_events_contract(conn: sqlite3.Connection) -> None:
     if row is None:
         return
     sql = row[0] or ""
-    if "status TEXT" in sql and "review_status TEXT NOT NULL DEFAULT 'unreviewed'" in sql:
+    if (
+        "status TEXT" in sql
+        and "review_status TEXT NOT NULL DEFAULT 'unreviewed'" in sql
+        and "needs_reanalysis" in sql
+    ):
         return
 
     columns = {item[1] for item in conn.execute("PRAGMA table_info(relationship_events)")}
@@ -85,7 +89,7 @@ def _ensure_relationship_events_contract(conn: sqlite3.Connection) -> None:
         ),
         "review_status": (
             "CASE "
-            "WHEN review_status IN ('unreviewed','verified','corrected','rejected') THEN review_status "
+            "WHEN review_status IN ('unreviewed','verified','corrected','needs_reanalysis','rejected') THEN review_status "
             "WHEN review_status = 'candidate' THEN 'unreviewed' "
             "ELSE 'unreviewed' END"
             if "review_status" in columns
@@ -304,7 +308,7 @@ def _relationship_events_schema(table_name: str) -> str:
         'other'
       )),
       CHECK (status IN ('candidate', 'hidden', 'archived')),
-      CHECK (review_status IN ('unreviewed', 'verified', 'corrected', 'rejected')),
+      CHECK (review_status IN ('unreviewed', 'verified', 'corrected', 'needs_reanalysis', 'rejected')),
       CHECK (confidence >= 0.0 AND confidence <= 1.0),
       CHECK (evidence_strength >= 0.0 AND evidence_strength <= 1.0),
       CHECK (severity >= 0 AND severity <= 4)

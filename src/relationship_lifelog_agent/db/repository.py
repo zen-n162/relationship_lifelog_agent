@@ -17,7 +17,7 @@ RowDict = dict[str, Any]
 ALLOWED_RELATIONSHIP_LABELS = frozenset({"partner", "ex_partner", "close_person", "other_private"})
 MANUAL_LABEL_SOURCE = "user_manual"
 ALLOWED_EVENT_STATUSES = frozenset({"candidate", "hidden", "archived"})
-ALLOWED_REVIEW_STATUSES = frozenset({"unreviewed", "verified", "corrected", "rejected"})
+ALLOWED_REVIEW_STATUSES = frozenset({"unreviewed", "verified", "corrected", "needs_reanalysis", "rejected"})
 
 
 class RelationshipRepository:

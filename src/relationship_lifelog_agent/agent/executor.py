@@ -31,6 +31,15 @@ from relationship_lifelog_agent.profiles import (
 
 CONFLICT_TYPES = {"conflict", "minor_misunderstanding"}
 _PROFILE_ARG_UNSET = object()
+_HUMAN_REVIEW_STATUSES = {"verified", "corrected"}
+_AI_ONLY_REVIEW_STATUSES = {"candidate", "unreviewed", ""}
+_REVIEW_RANK = {
+    "verified": 0,
+    "corrected": 0,
+    "unreviewed": 1,
+    "candidate": 1,
+    "needs_reanalysis": 2,
+}
 
 
 @dataclass(frozen=True)
@@ -125,6 +134,14 @@ def execute_plan(
             date_from=date_from,
             date_to=date_to,
         )
+        results["relationship_db.review_counts"] = [
+            _load_saved_relationship_review_counts(
+                settings,
+                profile=profile,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        ]
     intent = plan.primary_intent
     if intent == "conflict_frequency":
         result = _conflict_frequency(results)
@@ -178,6 +195,7 @@ def _execute_adapter_call(
 def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
     events = _relationship_event_candidates(results)
     counts = Counter(event.event_type for event in events)
+    review_aggregate = _review_aggregate(events, results)
     evidence = _evidence_items([*events, *_adapter_items(results, "personal.search_line"), *_adapter_items(results, "notes.search_notes")])
     examples = [
         f"{event.date}: {_severity_label(event.severity)} - {event.summary}"
@@ -188,23 +206,25 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
         return AnalysisResult(
             intent="conflict_frequency",
             summary=_no_candidate_summary(backend, "喧嘩候補"),
-            aggregate={"total_candidates": 0, "adapter_backend": backend},
+            aggregate={"total_candidates": 0, "adapter_backend": backend, **review_aggregate},
             confidence=0.3,
             evidence_strength=0.0,
-            cautions=[_backend_caution(backend)],
+            cautions=[_backend_caution(backend), *_review_cautions(events, results)],
         )
     backend_label = "mock データ上" if _backend_from_results(results) == "mock" else "上流read-only adapter"
+    review_phrase = "人間レビュー済みを優先して集計しています。" if review_aggregate["人間確認済み件数"] else ""
     return AnalysisResult(
         intent="conflict_frequency",
         summary=(
             f"{backend_label}では喧嘩候補が {len(events)} 件あります。"
-            "これは確定ではなく、人間確認前の候補です。"
+            f"これは確定ではなく、未確認のものは人間確認前の候補です。{review_phrase}"
         ),
         aggregate={
             "conflict_candidates": counts["conflict"],
             "minor_misunderstanding_candidates": counts["minor_misunderstanding"],
             "total_candidates": len(events),
             "observed_dates": ", ".join(event.date for event in events),
+            **review_aggregate,
         },
         examples=examples,
         evidence=evidence,
@@ -213,17 +233,18 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
         cautions=[
             "喧嘩は候補として扱います。相手の気持ちや関係状態は断定できません。",
             "返信遅延などの弱い信号だけでは喧嘩とは扱いません。",
+            *_review_cautions(events, results),
         ],
     )
 
 
 def _conflict_timeline(results: dict[str, list[Any]]) -> AnalysisResult:
-    events = sorted(_relationship_event_candidates(results), key=lambda item: item.date)
+    events = _rank_events(_relationship_event_candidates(results))
     evidence = _evidence_items([*events, *_adapter_items(results, "personal.search_line"), *_adapter_items(results, "notes.search_notes")])
     return AnalysisResult(
         intent="conflict_timeline",
         summary="喧嘩候補と軽いすれ違い候補を時系列で整理しました。",
-        aggregate={"total_candidates": len(events)},
+        aggregate={"total_candidates": len(events), **_review_aggregate(events, results)},
         examples=[
             f"{event.date}: {_severity_label(event.severity)} / confidence={event.confidence:.2f}"
             for event in events
@@ -234,6 +255,7 @@ def _conflict_timeline(results: dict[str, list[Any]]) -> AnalysisResult:
         cautions=[
             "時系列は mock データによる候補であり、実データの確定事実ではありません。",
             "相手の内面は記録から断定しません。",
+            *_review_cautions(events, results),
         ],
     )
 
@@ -241,16 +263,10 @@ def _conflict_timeline(results: dict[str, list[Any]]) -> AnalysisResult:
 def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
     window_days = _window_days_from_results(results)
     events = [*_adapter_items(results, "personal.search_events"), *_adapter_items(results, "relationship_db.events")]
-    conflicts = sorted(
-        [event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES],
-        key=lambda item: item.date,
-    )
+    conflicts = _rank_events([event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES])
     if not conflicts:
         conflicts = _line_conflict_candidates(results)
-    outings = sorted(
-        [event for event in events if isinstance(event, EventEvidence) and event.event_type == "date_or_outing"],
-        key=lambda item: item.date,
-    )
+    outings = _rank_events([event for event in events if isinstance(event, EventEvidence) and event.event_type == "date_or_outing"])
     media = [item for item in _adapter_items(results, "personal.search_media") if isinstance(item, MediaEvidence)]
     if not outings:
         outings = sorted(_media_outing_candidates(results), key=lambda item: item.date)
@@ -280,6 +296,7 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
             "conflict_candidates": len(conflicts),
             "activity_candidates": len(displayed_outings),
             "days_after_conflict": ", ".join(str(value) for value in days_after_values) or "unknown",
+            **_review_aggregate([*conflicts, *displayed_outings], results),
         },
         examples=examples,
         evidence=evidence,
@@ -289,6 +306,7 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
             "写真や場所だけでは仲直り確定とは言えません。",
             "外出候補は、LINE・場所・メモなどの追加根拠と合わせて確認する必要があります。",
             "相手の気持ちは記録からは断定できません。",
+            *_review_cautions([*conflicts, *displayed_outings], results),
         ],
     )
 
@@ -302,6 +320,7 @@ def _emotional_note_lookup(results: dict[str, list[Any]]) -> AnalysisResult:
         if isinstance(item, EventEvidence) and item.event_type == "emotional_note"
     ]
     evidence = _evidence_items([*notes, *thoughts, *saved_notes])
+    reviewed_items = [item for item in saved_notes if isinstance(item, EventEvidence)]
     return AnalysisResult(
         intent="emotional_note_lookup",
         summary="自分側のメモ候補には、反省や不安を含む振り返りがあります。",
@@ -310,6 +329,7 @@ def _emotional_note_lookup(results: dict[str, list[Any]]) -> AnalysisResult:
             "thought_candidates": len(thoughts),
             "saved_event_candidates": len(saved_notes),
             "observed_dates": ", ".join(item.date for item in [*notes, *thoughts, *saved_notes]),
+            **_review_aggregate(reviewed_items, results),
         },
         examples=[
             f"{item.date}: {item.summary}"
@@ -321,14 +341,15 @@ def _emotional_note_lookup(results: dict[str, list[Any]]) -> AnalysisResult:
         cautions=[
             "メモは自分側の記録候補として扱い、歌詞・引用・創作の可能性には注意します。",
             "相手の内面はメモから断定しません。",
+            *_review_cautions(reviewed_items, results),
         ],
     )
 
 
 def _monthly_relationship_review(results: dict[str, list[Any]], month: str) -> AnalysisResult:
     events = [*_adapter_items(results, "personal.search_events"), *_adapter_items(results, "relationship_db.events")]
-    conflicts = [event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES]
-    outings = [event for event in events if isinstance(event, EventEvidence) and event.event_type == "date_or_outing"]
+    conflicts = _rank_events([event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES])
+    outings = _rank_events([event for event in events if isinstance(event, EventEvidence) and event.event_type == "date_or_outing"])
     media = _adapter_items(results, "personal.search_media")
     notes = _adapter_items(results, "notes.search_notes")
     reflections = [item for item in _adapter_items(results, "notes.get_monthly_reflection") if isinstance(item, MonthlyReflection)]
@@ -347,6 +368,7 @@ def _monthly_relationship_review(results: dict[str, list[Any]], month: str) -> A
             "conflict_total_candidates": len(conflicts),
             "post_conflict_activity_candidates": len(outings),
             "note_candidates": len(notes),
+            **_review_aggregate([*conflicts, *outings], results),
         },
         examples=examples,
         evidence=evidence,
@@ -355,6 +377,7 @@ def _monthly_relationship_review(results: dict[str, list[Any]], month: str) -> A
         cautions=[
             "月次レビューは関係の良し悪しを採点するものではありません。",
             "相手の内面や関係ラベルは記録から推定しません。",
+            *_review_cautions([*conflicts, *outings], results),
         ],
     )
 
@@ -453,10 +476,60 @@ def _load_saved_relationship_events(
                     "review_status": str(row["review_status"]),
                     "event_date": str(row["event_date"]),
                     "primary_source_type": source_type,
+                    "review_rank": _review_rank(str(row["review_status"])),
                 },
             )
         )
-    return events
+    return _rank_events(events)
+
+
+def _load_saved_relationship_review_counts(
+    settings: Settings,
+    *,
+    profile: ProfileContext,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict[str, int]:
+    repo = RelationshipRepository(settings.paths.relationship_db)
+    clauses = ["profile_id = ?"]
+    params: list[Any] = [profile.id]
+    if date_from:
+        clauses.append("event_date >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("event_date <= ?")
+        params.append(date_to)
+    where = " AND ".join(clauses)
+    with repo.connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT status, review_status, COUNT(*) AS count
+            FROM relationship_events
+            WHERE {where}
+            GROUP BY status, review_status
+            """,
+            tuple(params),
+        ).fetchall()
+    counts = {
+        "human_verified": 0,
+        "ai_only": 0,
+        "excluded": 0,
+        "needs_reanalysis": 0,
+    }
+    for row in rows:
+        count = int(row["count"])
+        status = str(row["status"] or "")
+        review_status = str(row["review_status"] or "")
+        if status != "candidate" or review_status == "rejected":
+            counts["excluded"] += count
+            continue
+        if review_status in _HUMAN_REVIEW_STATUSES:
+            counts["human_verified"] += count
+        elif review_status == "needs_reanalysis":
+            counts["needs_reanalysis"] += count
+        else:
+            counts["ai_only"] += count
+    return counts
 
 
 def _apply_profile_filters(call: AdapterCall, kwargs: dict[str, Any], profile: ProfileContext | None) -> None:
@@ -524,7 +597,58 @@ def _relationship_event_candidates(results: dict[str, list[Any]]) -> list[EventE
         ]
     if not candidates:
         candidates = _line_conflict_candidates(results)
-    return sorted(candidates, key=lambda item: item.date)
+    return _rank_events(candidates)
+
+
+def _rank_events(events: list[EventEvidence]) -> list[EventEvidence]:
+    return sorted(events, key=lambda item: (_review_rank(item.review_status), item.date, item.source_id))
+
+
+def _review_rank(review_status: str) -> int:
+    return _REVIEW_RANK.get(review_status, 1)
+
+
+def _review_aggregate(events: list[EventEvidence], results: dict[str, list[Any]]) -> dict[str, int]:
+    displayed_counts = {
+        "human_verified": 0,
+        "ai_only": 0,
+        "needs_reanalysis": 0,
+    }
+    for event in events:
+        if event.review_status in _HUMAN_REVIEW_STATUSES:
+            displayed_counts["human_verified"] += 1
+        elif event.review_status == "needs_reanalysis":
+            displayed_counts["needs_reanalysis"] += 1
+        elif event.review_status in _AI_ONLY_REVIEW_STATUSES:
+            displayed_counts["ai_only"] += 1
+        else:
+            displayed_counts["ai_only"] += 1
+    db_counts = _db_review_counts_from_results(results)
+    return {
+        "人間確認済み件数": max(displayed_counts["human_verified"], db_counts.get("human_verified", 0)),
+        "AI推定のみ件数": displayed_counts["ai_only"],
+        "除外済み件数": db_counts.get("excluded", 0),
+        "要再分析件数": max(displayed_counts["needs_reanalysis"], db_counts.get("needs_reanalysis", 0)),
+    }
+
+
+def _review_cautions(events: list[EventEvidence], results: dict[str, list[Any]]) -> list[str]:
+    aggregate = _review_aggregate(events, results)
+    cautions: list[str] = []
+    if aggregate["要再分析件数"]:
+        cautions.append("要再分析にされた候補があります。通常候補より慎重に扱い、必要なら再抽出してください。")
+    if aggregate["除外済み件数"]:
+        cautions.append("rejected または冗談扱いなどで除外済みのeventは通常回答から外しています。")
+    if aggregate["人間確認済み件数"]:
+        cautions.append("人間確認済み・人間修正済みのeventをAI推定候補より優先しています。")
+    return cautions
+
+
+def _db_review_counts_from_results(results: dict[str, list[Any]]) -> dict[str, int]:
+    values = results.get("relationship_db.review_counts", [])
+    if not values or not isinstance(values[0], dict):
+        return {}
+    return {key: int(value) for key, value in values[0].items()}
 
 
 def _line_conflict_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:
@@ -698,6 +822,8 @@ def _review_status_summary_prefix(review_status: str) -> str:
         return "人間確認済み: "
     if review_status == "corrected":
         return "人間修正済み: "
+    if review_status == "needs_reanalysis":
+        return "要再分析: "
     return ""
 
 

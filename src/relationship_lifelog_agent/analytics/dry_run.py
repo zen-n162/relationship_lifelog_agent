@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 from relationship_lifelog_agent.adapters.types import (
@@ -128,6 +129,12 @@ def run_relationship_dry_run(
         for month in _months_between(date_from, date_to)
     ]
     warnings = _memory_warnings(memory)
+    reviewed_snapshot = _load_reviewed_event_snapshot(
+        settings=settings,
+        profile=profile,
+        date_from=date_from,
+        date_to=date_to,
+    )
     report = _render_report(
         date_from=date_from,
         date_to=date_to,
@@ -141,6 +148,7 @@ def run_relationship_dry_run(
         outings=outings,
         emotional_notes=emotional_notes,
         monthly_summaries=monthly_summaries,
+        reviewed_snapshot=reviewed_snapshot,
         warnings=warnings,
     )
     if output_path is not None:
@@ -447,6 +455,7 @@ def _render_report(
     outings: list[PostConflictActivity],
     emotional_notes: list[NoteEvidence],
     monthly_summaries: list[dict[str, object]],
+    reviewed_snapshot: dict[str, Any],
     warnings: list[str],
 ) -> str:
     counts = conflict_counts(conflicts)
@@ -461,18 +470,20 @@ def _render_report(
         f"## 対象期間\n- date_from: {date_from}\n- date_to: {date_to}\n- backend: {backend}\n- mode: {mode}",
         "## 使用profile\n" + _format_profile(profile, mode, privacy_level),
         "## 取得できたsource counts\n" + _format_dict(source_counts),
-        "## conflict candidates\n"
+        "## reviewed relationship DB events\n"
+        + _format_reviewed_snapshot(reviewed_snapshot, mode, privacy_level, person_names),
+        "## new conflict candidates\n"
         + _format_events([item for item in conflicts if item.event_type == "conflict"], mode, privacy_level, person_names),
-        "## minor misunderstanding candidates\n"
+        "## new minor misunderstanding candidates\n"
         + _format_events(
             [item for item in conflicts if item.event_type == "minor_misunderstanding"],
             mode,
             privacy_level,
             person_names,
         ),
-        "## reconciliation candidates\n" + _format_events(reconciliations, mode, privacy_level, person_names),
-        "## post-conflict outing candidates\n" + _format_outings(outings, mode, privacy_level, person_names),
-        "## emotional note candidates\n" + _format_adapter_evidence(emotional_notes, mode, privacy_level, person_names),
+        "## new reconciliation candidates\n" + _format_events(reconciliations, mode, privacy_level, person_names),
+        "## new post-conflict outing candidates\n" + _format_outings(outings, mode, privacy_level, person_names),
+        "## new emotional note candidates\n" + _format_adapter_evidence(emotional_notes, mode, privacy_level, person_names),
         "## monthly relationship summary\n" + _format_monthly(monthly_summaries, mode, privacy_level, person_names),
         "## evidence strength 分布\n" + _format_strength_distribution([*conflicts, *reconciliations, *emotional_notes]),
         "## candidate counts\n" + _format_dict({**counts, "reconciliation_candidates": len(reconciliations), "post_conflict_outing_candidates": len(outings), "emotional_note_candidates": len(emotional_notes)}),
@@ -549,6 +560,38 @@ def _format_adapter_evidence(items: list[AdapterEvidence], mode: str, privacy_le
             f"(confidence={evidence.confidence:.2f}, evidence_strength={evidence.evidence_strength:.2f}, "
             f"source={_display_source_pointer(evidence.source_pointer, mode, privacy_level, person_names)})"
         )
+    return "\n".join(lines)
+
+
+def _format_reviewed_snapshot(
+    snapshot: dict[str, Any],
+    mode: str,
+    privacy_level: str,
+    person_names: list[str],
+) -> str:
+    if not snapshot:
+        return "- relationship DBのreview済みeventは確認できませんでした。"
+    counts = snapshot.get("counts", {})
+    lines = [
+        "- review済みeventと新規dry-run candidateは分けて扱います。",
+        f"- 人間確認済み件数: {counts.get('human_verified', 0)}",
+        f"- AI推定のみ件数: {counts.get('ai_only', 0)}",
+        f"- 除外済み件数: {counts.get('excluded', 0)}",
+        f"- 要再分析件数: {counts.get('needs_reanalysis', 0)}",
+    ]
+    examples = snapshot.get("examples", [])
+    if not examples:
+        return "\n".join(lines)
+    if privacy_level == "counts-only":
+        lines.append("- detail: counts-only privacy levelのためreview済みevent本文は省略しています。")
+        return "\n".join(lines)
+    lines.append("- examples:")
+    for item in examples[:5]:
+        status = item.get("review_status", "unreviewed")
+        event_type = item.get("event_type", "other")
+        date = item.get("event_date", "unknown")
+        summary = _display_text(str(item.get("summary", "")), mode=mode, privacy_level=privacy_level, person_names=person_names)
+        lines.append(f"  - {date}: {status}/{event_type} - {summary}")
     return "\n".join(lines)
 
 
@@ -643,6 +686,75 @@ def _memory_warnings(memory: object) -> list[str]:
         if callable(adapter_warnings):
             collected.extend(adapter_warnings())
     return list(dict.fromkeys(collected))
+
+
+def _load_reviewed_event_snapshot(
+    *,
+    settings: Settings,
+    profile: ProfileContext | None,
+    date_from: str,
+    date_to: str,
+) -> dict[str, Any]:
+    if profile is None:
+        return {}
+    db_path = Path(settings.paths.relationship_db).expanduser()
+    if not db_path.exists():
+        return {}
+    uri = f"file:{db_path}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'relationship_events'"
+            ).fetchone()
+            if table is None:
+                return {}
+            rows = conn.execute(
+                """
+                SELECT id, event_type, event_date, summary, status, review_status
+                FROM relationship_events
+                WHERE profile_id = ?
+                  AND event_date >= ?
+                  AND event_date <= ?
+                ORDER BY
+                  CASE review_status
+                    WHEN 'verified' THEN 0
+                    WHEN 'corrected' THEN 0
+                    WHEN 'unreviewed' THEN 1
+                    WHEN 'needs_reanalysis' THEN 2
+                    ELSE 3
+                  END,
+                  event_date,
+                  id
+                LIMIT 200
+                """,
+                (profile.id, date_from, date_to),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    counts = {"human_verified": 0, "ai_only": 0, "excluded": 0, "needs_reanalysis": 0}
+    examples: list[dict[str, str]] = []
+    for row in rows:
+        status = str(row["status"] or "")
+        review_status = str(row["review_status"] or "")
+        if status != "candidate" or review_status == "rejected":
+            counts["excluded"] += 1
+        elif review_status in {"verified", "corrected"}:
+            counts["human_verified"] += 1
+        elif review_status == "needs_reanalysis":
+            counts["needs_reanalysis"] += 1
+        else:
+            counts["ai_only"] += 1
+        examples.append(
+            {
+                "event_type": str(row["event_type"]),
+                "event_date": str(row["event_date"]),
+                "summary": str(row["summary"]),
+                "status": status,
+                "review_status": review_status,
+            }
+        )
+    return {"counts": counts, "examples": examples}
 
 
 def _months_between(date_from: str, date_to: str) -> list[str]:

@@ -30,6 +30,25 @@ def test_mark_as_misunderstanding_updates_event_type(tmp_path) -> None:
     assert event["severity"] == 1
 
 
+def test_mark_as_misunderstanding_is_counted_as_minor_candidate(tmp_path) -> None:
+    repo, event_id = _repo_with_event(tmp_path)
+    settings = _settings(tmp_path)
+
+    apply_review_action(repo, event_id=event_id, action="mark_as_misunderstanding")
+    answer = answer_question(
+        "喧嘩はどのくらいしている？",
+        settings=settings,
+        profile_id=1,
+        date_from="2025-04-01",
+        date_to="2025-04-30",
+    )
+
+    assert "conflict_candidates: 0" in answer
+    assert "minor_misunderstanding_candidates: 1" in answer
+    assert "人間確認済み件数: 1" in answer
+    assert "軽いすれ違い候補" in answer
+
+
 def test_rejected_event_is_excluded_from_normal_answer(tmp_path) -> None:
     repo, event_id = _repo_with_event(tmp_path)
     settings = _settings(tmp_path)
@@ -53,6 +72,25 @@ def test_rejected_event_is_excluded_from_normal_answer(tmp_path) -> None:
     assert "保存済みの喧嘩候補" in before
     assert "保存済みの喧嘩候補" not in after
     assert "total_candidates: 0" in after
+    assert "除外済み件数: 1" in after
+
+
+def test_mark_as_joke_is_excluded_from_conflict_frequency(tmp_path) -> None:
+    repo, event_id = _repo_with_event(tmp_path)
+    settings = _settings(tmp_path)
+
+    apply_review_action(repo, event_id=event_id, action="mark_as_joke")
+    answer = answer_question(
+        "喧嘩はどのくらいしている？",
+        settings=settings,
+        profile_id=1,
+        date_from="2025-04-01",
+        date_to="2025-04-30",
+    )
+
+    assert "保存済みの喧嘩候補" not in answer
+    assert "total_candidates: 0" in answer
+    assert "除外済み件数: 1" in answer
 
 
 def test_verified_event_is_labeled_as_human_verified(tmp_path) -> None:
@@ -69,6 +107,27 @@ def test_verified_event_is_labeled_as_human_verified(tmp_path) -> None:
     )
 
     assert "人間確認済み" in answer
+    assert "人間確認済み件数: 1" in answer
+    assert "AI推定のみ件数: 0" in answer
+
+
+def test_needs_reanalysis_event_is_counted_and_cautioned(tmp_path) -> None:
+    repo, event_id = _repo_with_event(tmp_path)
+    settings = _settings(tmp_path)
+
+    result = apply_review_action(repo, event_id=event_id, action="needs_reanalysis")
+    answer = answer_question(
+        "喧嘩はどのくらいしている？",
+        settings=settings,
+        profile_id=1,
+        date_from="2025-04-01",
+        date_to="2025-04-30",
+    )
+
+    assert result.review_status == "needs_reanalysis"
+    assert "要再分析" in answer
+    assert "要再分析件数: 1" in answer
+    assert "再抽出" in answer
 
 
 def test_chat_answer_includes_public_safe_review_targets(tmp_path) -> None:

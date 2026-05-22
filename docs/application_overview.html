@@ -370,6 +370,14 @@
             duplicate、raw leakage、禁止表現を確認します。restoreは明示CLIでのみ実行します。
           </p>
         </article>
+        <article class="card">
+          <h3>review結果を優先</h3>
+          <p>
+            <code>verified</code>と<code>corrected</code>はAI候補より優先し、
+            <code>rejected</code>や冗談扱いのeventは通常回答から除外します。
+            回答には人間確認済み件数、AI推定のみ件数、除外済み件数、要再分析件数を含めます。
+          </p>
+        </article>
       </div>
     </section>
 
@@ -599,6 +607,14 @@ python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
 python -m relationship_lifelog_agent.cli db backups
 python -m relationship_lifelog_agent.cli db restore \
   --backup-path data/backups/relationship_YYYYMMDD_HHMMSS.sqlite</code></pre>
+      <p>
+        回答ではreview済みrelationship eventsをAI推定候補より優先します。
+        <code>verified</code>と<code>corrected</code>は人間確認済みとして扱い、
+        <code>needs_reanalysis</code>は注意付き候補として残し、
+        <code>rejected</code>と冗談扱いのhidden eventは通常回答から除外します。
+        <code>mark_as_misunderstanding</code>は軽いすれ違い、
+        <code>mark_as_reconciled</code>は仲直り候補として集計します。
+      </p>
       <p>継続評価はmock backendで安定実行できます。public/private安全性、禁止表現、根拠の有無、弱い根拠への注意、関係ラベル推定の抑制を確認します。</p>
       <pre><code>python eval/run_eval.py
 python eval/run_eval.py --format json --output data/exports/eval_result.json</code></pre>

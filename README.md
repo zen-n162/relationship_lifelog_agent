@@ -195,6 +195,23 @@ python -m relationship_lifelog_agent.cli db restore \
   --backup-path data/backups/relationship_YYYYMMDD_HHMMSS.sqlite
 ```
 
+## Review-aware Answers
+
+Saved `relationship_events` honor user review actions before AI-derived
+candidates:
+
+- `verified` and `corrected` are treated as human-reviewed and ranked first.
+- `unreviewed` stays a normal AI-estimated candidate.
+- `needs_reanalysis` stays visible but adds caution text.
+- `rejected` and `mark_as_joke` hidden events are excluded from normal answers.
+- `mark_as_misunderstanding` moves the event into `minor_misunderstanding`.
+- `mark_as_reconciled` moves the event into `reconciliation`.
+
+Answers and monthly summaries include review-aware counts:
+`人間確認済み件数`, `AI推定のみ件数`, `除外済み件数`, and `要再分析件数`.
+Dry-run reports separate existing reviewed relationship DB events from newly
+extracted candidates.
+
 ## MVP Features
 
 - Rule-based Japanese intent routing.
@@ -207,6 +224,7 @@ python -m relationship_lifelog_agent.cli db restore \
 - Dry-run relationship event candidate extraction with `counts-only`, `redacted`,
   and `private` report levels plus explicit `--write` candidate saves.
 - Relationship DB-only backup/list/restore commands for rollback after explicit writes.
+- Review-aware ranking that prioritizes human-reviewed events and excludes rejected events.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.
 - Public-mode redaction for names, relationship labels, GPS, paths, and raw excerpts.

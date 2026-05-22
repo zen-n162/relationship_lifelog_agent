@@ -96,3 +96,34 @@ cases:
       - "MVP"
     forbidden_phrases:
       - "診断できます"
+
+  - id: review_verified_conflict_private
+    question: "喧嘩はどのくらいしている？"
+    mode: private
+    backend: mock
+    date_from: "2025-04-01"
+    date_to: "2025-04-30"
+    setup_relationship_events:
+      - event_type: conflict
+        event_date: "2025-04-10"
+        summary: "review済みの喧嘩候補。"
+        review_status: verified
+        confidence: 0.8
+        evidence_strength: 0.75
+        severity: 2
+    expected_intents:
+      - conflict_frequency
+    required_sections:
+      - 要約
+      - 集計
+      - 根拠
+      - 注意
+    require_evidence: true
+    required_substrings:
+      - "人間確認済み"
+      - "人間確認済み件数"
+      - "AI推定のみ件数"
+      - "人間確認済み・人間修正済みのeventをAI推定候補より優先"
+    forbidden_phrases:
+      - "確実に喧嘩"
+      - "相手は怒っていた"

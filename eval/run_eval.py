@@ -100,19 +100,25 @@ def evaluate_case(
         )
 
     settings = _settings_for_backend(base_settings, backend)
+    seeded_event_ids = _seed_case_relationship_events(case, settings)
     route = route_question(question)
-    answer = answer_question(
-        question,
-        mode=mode,
-        settings=settings,
-        profile_id=settings.relationship.default_profile_id,
-    )
-    failures = evaluate_answer_text(
-        answer,
-        case=case,
-        intents=list(route.intents),
-        person_names=["評価用Aさん"],
-    )
+    try:
+        answer = answer_question(
+            question,
+            mode=mode,
+            settings=settings,
+            profile_id=settings.relationship.default_profile_id,
+            date_from=case.get("date_from"),
+            date_to=case.get("date_to"),
+        )
+        failures = evaluate_answer_text(
+            answer,
+            case=case,
+            intents=list(route.intents),
+            person_names=["評価用Aさん"],
+        )
+    finally:
+        _delete_seeded_relationship_events(settings, seeded_event_ids)
     return EvalCaseResult(
         case_id=case_id,
         question=question,
@@ -239,6 +245,45 @@ def _settings_for_backend(settings: Settings, backend: str) -> Settings:
         privacy=settings.privacy,
         llm=settings.llm,
     )
+
+
+def _seed_case_relationship_events(case: dict[str, Any], settings: Settings) -> list[int]:
+    events = case.get("setup_relationship_events") or []
+    if not events:
+        return []
+    repo = RelationshipRepository(settings.paths.relationship_db)
+    created_ids: list[int] = []
+    for index, event in enumerate(events):
+        event_id = repo.create_event(
+            profile_id=settings.relationship.default_profile_id,
+            event_type=str(event.get("event_type", "conflict")),
+            event_date=str(event.get("event_date", "2025-04-10")),
+            summary=str(event.get("summary", "eval relationship event candidate")),
+            status=str(event.get("status", "candidate")),
+            review_status=str(event.get("review_status", "unreviewed")),
+            confidence=float(event.get("confidence", 0.6)),
+            evidence_strength=float(event.get("evidence_strength", 0.6)),
+            severity=int(event.get("severity", 2)),
+        )
+        repo.create_evidence(
+            event_id=event_id,
+            source_type="manual",
+            source_id=f"eval-review-{index}",
+            source_pointer=f"manual:eval-review-{index}",
+            summary="eval review-aware source pointer",
+            confidence=0.6,
+            evidence_strength=0.6,
+        )
+        created_ids.append(event_id)
+    return created_ids
+
+
+def _delete_seeded_relationship_events(settings: Settings, event_ids: list[int]) -> None:
+    if not event_ids:
+        return
+    repo = RelationshipRepository(settings.paths.relationship_db)
+    for event_id in event_ids:
+        repo.delete_event(event_id)
 
 
 def _should_skip_upstream(case: dict[str, Any], settings: Settings, include_upstream: bool) -> bool:
