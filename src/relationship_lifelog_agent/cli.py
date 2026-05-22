@@ -23,6 +23,14 @@ from relationship_lifelog_agent.db.backup import (
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.doctor import render_doctor_json, render_doctor_text, run_doctor
 from relationship_lifelog_agent.profiles import load_profile_context
+from relationship_lifelog_agent.upstream_identities import (
+    IDENTITY_KINDS,
+    IDENTITY_PRIVACY_LEVELS,
+    render_identities_json,
+    render_identities_markdown,
+    run_upstream_identities,
+    write_identities_report,
+)
 from relationship_lifelog_agent.upstream_inspect import (
     render_inspection_json,
     render_inspection_markdown,
@@ -121,6 +129,24 @@ def _upstream_main(argv: list[str]) -> None:
                 print(render_smoke_json(report))
             else:
                 print(render_smoke_markdown(report))
+        if report.has_errors:
+            raise SystemExit(1)
+        return
+    if args.upstream_command == "identities":
+        report = run_upstream_identities(
+            config_path=args.config,
+            backend=args.backend,
+            kind=args.kind,
+            privacy_level=args.privacy_level,
+        )
+        if args.output:
+            write_identities_report(report, args.output, output_format=args.format)
+            print("upstream identity inventory written: [redacted_path]")
+        else:
+            if args.format == "json":
+                print(render_identities_json(report))
+            else:
+                print(render_identities_markdown(report))
         if report.has_errors:
             raise SystemExit(1)
         return
@@ -338,6 +364,12 @@ def _build_upstream_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--profile-id", type=int, default=None)
     smoke.add_argument("--format", choices=("markdown", "json"), default="markdown")
     smoke.add_argument("--output", default=None)
+    identities = upstream_sub.add_parser("identities", help="List safe upstream identity IDs for manual profile setup.")
+    identities.add_argument("--backend", choices=("mock", "upstream_readonly"), default="upstream_readonly")
+    identities.add_argument("--kind", choices=IDENTITY_KINDS, default="all")
+    identities.add_argument("--privacy-level", choices=IDENTITY_PRIVACY_LEVELS, default="redacted")
+    identities.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    identities.add_argument("--output", default=None)
     return parser
 
 

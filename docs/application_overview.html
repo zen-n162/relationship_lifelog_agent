@@ -509,6 +509,11 @@
               <td>source counts、date range coverage、warnings、redaction status、<code>write_count: 0</code>を出します。relationship DBには書き込みません。</td>
             </tr>
             <tr>
+              <td><code>upstream identities</code></td>
+              <td>手動profile作成用のperson / LINE speaker ID候補を安全に確認します。</td>
+              <td>redacted modeでは人物名や表示名を匿名化し、LINE本文、メモ本文、正確GPS、顔情報、写真パス、private path、AI推定の関係ラベルを出しません。AIによるpersonとLINE speakerの自動リンクも行いません。</td>
+            </tr>
+            <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
               <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、最小review actionを含む折りたたみ設定を実装済みです。</td>
@@ -570,6 +575,13 @@ python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
   --date-to 2025-01-31 \
   --profile-id 1 \
   --output data/exports/upstream_smoke_2025_01.md</code></pre>
+      <p>手動profile作成のID候補はidentity inventoryで確認できます。redacted modeでは名前や表示名を匿名化します。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli upstream identities \
+  --backend upstream_readonly \
+  --kind all \
+  --privacy-level redacted \
+  --format markdown \
+  --output data/exports/upstream_identities.md</code></pre>
       <p>profileはCLIから手動作成できます。</p>
       <pre><code>python -m relationship_lifelog_agent.cli profile create \
   --profile-name "Aさん" \

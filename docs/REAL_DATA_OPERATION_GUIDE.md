@@ -102,6 +102,26 @@ python -m relationship_lifelog_agent.cli --config config.local.yaml upstream smo
 
 relationship profile は必ずユーザーが手動で作成します。AIに relationship label を推定させたり、person と LINE speaker を自動リンクさせたりしません。
 
+先に identity inventory で、profile作成に使う上流ID候補だけを確認できます。redacted modeでは人物名やLINE表示名を匿名化し、LINE本文、メモ本文、正確GPS、顔情報、顔crop、写真パス、private path、AI推定の関係ラベルは出しません。
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml upstream identities \
+  --backend upstream_readonly \
+  --kind people \
+  --privacy-level redacted \
+  --format markdown \
+  --output data/exports/upstream_people_identities.md
+
+python -m relationship_lifelog_agent.cli --config config.local.yaml upstream identities \
+  --backend upstream_readonly \
+  --kind line-speakers \
+  --privacy-level redacted \
+  --format markdown \
+  --output data/exports/upstream_line_speakers.md
+```
+
+private modeでは手動ラベルや表示名を確認できますが、それでも本文、写真、顔crop、正確GPS、写真パスは出しません。private reportは自分だけで確認してください。
+
 ```bash
 python -m relationship_lifelog_agent.cli --config config.local.yaml profile create \
   --profile-name "<profile_name>" \

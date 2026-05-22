@@ -110,6 +110,31 @@ python -m relationship_lifelog_agent.cli upstream smoke \
   --output data/exports/upstream_smoke_2025_01.md
 ```
 
+## Upstream Identity Inventory
+
+Use identity inventory to find manual `relationship_profiles` source IDs without
+asking AI to infer relationships or link people to LINE speakers. It reads the
+upstream DBs in read-only mode and prints only IDs, counts, dates, verification
+status, and anonymized labels in `redacted` mode. It does not print LINE text,
+note text, exact GPS, face crops, embeddings, photo paths, private paths, or
+relationship-label guesses.
+
+```bash
+python -m relationship_lifelog_agent.cli upstream identities \
+  --backend upstream_readonly \
+  --kind people \
+  --privacy-level redacted \
+  --format markdown \
+  --output data/exports/upstream_people_identities.md
+
+python -m relationship_lifelog_agent.cli upstream identities \
+  --backend upstream_readonly \
+  --kind line-speakers \
+  --privacy-level redacted \
+  --format markdown \
+  --output data/exports/upstream_line_speakers.md
+```
+
 ## Eval
 
 The eval runner checks mock/private/public answer quality and safety. It covers
