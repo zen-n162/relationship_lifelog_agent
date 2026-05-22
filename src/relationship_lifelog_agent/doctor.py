@@ -304,7 +304,14 @@ def _check_upstream_db(name: str, db_path: str | None) -> DoctorCheck:
         tables = _sqlite_table_counts(conn)
     finally:
         conn.close()
-    details.update({"table_count": len(tables), "tables": tables})
+    safe_tables, redacted_count = _redact_sensitive_table_counts(tables)
+    details.update(
+        {
+            "table_count": len(tables),
+            "tables": safe_tables,
+            "redacted_sensitive_table_count": redacted_count,
+        }
+    )
     return DoctorCheck(name, "OK", f"{name} opened read-only", details)
 
 
@@ -352,6 +359,30 @@ def _sqlite_table_counts(conn: sqlite3.Connection) -> dict[str, int | str]:
         name = str(row[0])
         table_counts[name] = _safe_count(conn, name)
     return table_counts
+
+
+def _redact_sensitive_table_counts(tables: dict[str, int | str]) -> tuple[dict[str, int | str], int]:
+    safe: dict[str, int | str] = {}
+    redacted_count = 0
+    for name, count in tables.items():
+        if _is_sensitive_upstream_table(name):
+            redacted_count += 1
+            continue
+        safe[name] = count
+    return safe, redacted_count
+
+
+def _is_sensitive_upstream_table(name: str) -> bool:
+    lowered = name.lower()
+    sensitive_tokens = (
+        "face",
+        "embedding",
+        "gps",
+        "location",
+        "photo",
+        "path",
+    )
+    return any(token in lowered for token in sensitive_tokens)
 
 
 def _safe_count(conn: sqlite3.Connection, table_name: str) -> int | str:

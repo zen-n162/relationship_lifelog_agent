@@ -86,6 +86,31 @@ def test_doctor_counts_upstream_tables_without_rows(tmp_path) -> None:
     assert "synthetic private row" not in rendered
 
 
+def test_doctor_redacts_sensitive_upstream_table_names(tmp_path) -> None:
+    upstream_db = tmp_path / "personal.sqlite"
+    conn = sqlite3.connect(upstream_db)
+    conn.execute("CREATE TABLE line_messages (id INTEGER PRIMARY KEY, text TEXT)")
+    conn.execute("CREATE TABLE face_embeddings (id INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE location_points (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    config_path = _write_config(
+        tmp_path,
+        relationship_db=_initialized_relationship_db(tmp_path),
+        extra_paths={"personal_lifelog_db": str(upstream_db)},
+    )
+
+    report = run_doctor(config_path=config_path, backend="upstream_readonly", project_root=PROJECT_ROOT)
+    personal = next(check for check in report.checks if check.name == "personal_lifelog_db")
+    rendered = render_doctor_json(report)
+
+    assert personal.status == "OK"
+    assert personal.details["tables"] == {"line_messages": 0}
+    assert personal.details["redacted_sensitive_table_count"] == 2
+    assert "face_embeddings" not in rendered
+    assert "location_points" not in rendered
+
+
 def test_doctor_cli_exits_nonzero_on_error(tmp_path) -> None:
     config_path = _write_config(
         tmp_path,
