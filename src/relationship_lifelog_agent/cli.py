@@ -18,6 +18,12 @@ from relationship_lifelog_agent.upstream_inspect import (
     run_upstream_inspection,
     write_inspection_report,
 )
+from relationship_lifelog_agent.upstream_smoke import (
+    render_smoke_json,
+    render_smoke_markdown,
+    run_upstream_smoke,
+    write_smoke_report,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -68,17 +74,39 @@ def _doctor_main(argv: list[str]) -> None:
 def _upstream_main(argv: list[str]) -> None:
     parser = _build_upstream_parser()
     args = parser.parse_args(argv)
-    report = run_upstream_inspection(config_path=args.config, backend=args.backend)
-    if args.output:
-        write_inspection_report(report, args.output, output_format=args.format)
-        print("upstream schema inspection written: [redacted_path]")
-    else:
-        if args.format == "json":
-            print(render_inspection_json(report))
+    if args.upstream_command == "inspect":
+        report = run_upstream_inspection(config_path=args.config, backend=args.backend)
+        if args.output:
+            write_inspection_report(report, args.output, output_format=args.format)
+            print("upstream schema inspection written: [redacted_path]")
         else:
-            print(render_inspection_markdown(report))
-    if report.has_errors:
-        raise SystemExit(1)
+            if args.format == "json":
+                print(render_inspection_json(report))
+            else:
+                print(render_inspection_markdown(report))
+        if report.has_errors:
+            raise SystemExit(1)
+        return
+    if args.upstream_command == "smoke":
+        report = run_upstream_smoke(
+            config_path=args.config,
+            backend=args.backend,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            profile_id=args.profile_id,
+        )
+        if args.output:
+            write_smoke_report(report, args.output, output_format=args.format)
+            print("upstream smoke report written: [redacted_path]")
+        else:
+            if args.format == "json":
+                print(render_smoke_json(report))
+            else:
+                print(render_smoke_markdown(report))
+        if report.has_errors:
+            raise SystemExit(1)
+        return
+    parser.error("unknown upstream command")
 
 
 def _profile_main(argv: list[str]) -> None:
@@ -204,6 +232,13 @@ def _build_upstream_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--backend", choices=("mock", "upstream_readonly"), default="upstream_readonly")
     inspect.add_argument("--format", choices=("markdown", "json"), default="markdown")
     inspect.add_argument("--output", default=None)
+    smoke = upstream_sub.add_parser("smoke", help="Run counts-only read-only upstream adapter smoke.")
+    smoke.add_argument("--backend", choices=("mock", "upstream_readonly"), default="upstream_readonly")
+    smoke.add_argument("--date-from", required=True)
+    smoke.add_argument("--date-to", required=True)
+    smoke.add_argument("--profile-id", type=int, default=None)
+    smoke.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    smoke.add_argument("--output", default=None)
     return parser
 
 

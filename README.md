@@ -85,6 +85,23 @@ python -m relationship_lifelog_agent.cli upstream inspect \
 python -m relationship_lifelog_agent.cli upstream inspect --format json
 ```
 
+## Upstream Counts-only Smoke
+
+Use upstream smoke after schema inspection to exercise the adapters end to end
+without writing to the relationship DB. The report contains source counts, date
+range coverage, adapter coverage, warnings, redaction status, and
+`write_count: 0`. It does not include raw LINE text, raw note text, exact GPS,
+face data, photo paths, or private paths.
+
+```bash
+python -m relationship_lifelog_agent.cli upstream smoke \
+  --backend upstream_readonly \
+  --date-from 2025-01-01 \
+  --date-to 2025-01-31 \
+  --profile-id 1 \
+  --output data/exports/upstream_smoke_2025_01.md
+```
+
 ## Eval
 
 The eval runner checks mock/private/public answer quality and safety. It covers
