@@ -390,6 +390,13 @@
             <p>回答後に禁止表現やpublic modeで出してはいけない情報を検査・匿名化します。</p>
           </div>
         </div>
+        <div class="flow-step">
+          <span class="num">6</span>
+          <div>
+            <strong>Review action</strong>
+            <p>回答にrelationship DB由来のcandidateが含まれる場合、最小Review accordionからverify、reject、mark_as_misunderstandingなどを保存できます。上流データや元sourceは変更しません。</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -431,9 +438,14 @@
               <td>person name、relationship label、GPS、path、raw excerptの保護をテスト済みです。</td>
             </tr>
             <tr>
+              <td><code>review/</code></td>
+              <td>ユーザーによるcandidate review actionを保存します。</td>
+              <td><code>relationship_review_actions</code>に履歴を残し、<code>relationship_events.review_status</code>を更新します。reject済みcandidateは通常回答から除外します。</td>
+            </tr>
+            <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
-              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debugを含む折りたたみ設定を実装済みです。</td>
+              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、最小review actionを含む折りたたみ設定を実装済みです。</td>
             </tr>
           </tbody>
         </table>

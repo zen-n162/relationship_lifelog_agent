@@ -38,6 +38,12 @@ hidden settings accordion lets you choose `mock` or `upstream_readonly`, target
 profile, date range, post-conflict window days, private/public mode, and debug
 output. Debug output is off by default.
 
+When an answer includes relationship DB candidates, the minimal review accordion
+lets you save `verify`, `reject`, `mark_as_misunderstanding`, `mark_as_joke`,
+`mark_as_reconciled`, or `needs_reanalysis`. Review history is stored in
+`relationship_review_actions`; upstream data and original source records are not
+modified or deleted.
+
 ## Test
 
 ```bash
@@ -96,6 +102,7 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
 - Manual `relationship_profiles` management from the CLI and UI settings.
 - Chat UI backend/profile/date-range selection with safe fallback when upstream
   adapters or profiles are not configured.
+- Minimal Chat UI review actions for saved relationship event candidates.
 - Dry-run relationship event candidate extraction with explicit `--write` candidate saves.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from relationship_lifelog_agent.adapters.types import (
@@ -33,6 +33,20 @@ CONFLICT_TYPES = {"conflict", "minor_misunderstanding"}
 _PROFILE_ARG_UNSET = object()
 
 
+@dataclass(frozen=True)
+class ReviewTarget:
+    event_id: int
+    label: str
+    event_type: str
+    review_status: str
+
+
+@dataclass(frozen=True)
+class ChatAnswer:
+    text: str
+    review_targets: tuple[ReviewTarget, ...] = ()
+
+
 def answer_question(
     question: str,
     mode: str = "private",
@@ -43,10 +57,32 @@ def answer_question(
     date_to: str | None = None,
     post_conflict_window_days: int | float | None = None,
 ) -> str:
+    return answer_chat(
+        question,
+        mode=mode,
+        memory=memory,
+        settings=settings,
+        profile_id=profile_id,
+        date_from=date_from,
+        date_to=date_to,
+        post_conflict_window_days=post_conflict_window_days,
+    ).text
+
+
+def answer_chat(
+    question: str,
+    mode: str = "private",
+    memory: object | None = None,
+    settings: Settings | None = None,
+    profile_id: int | None | object = _PROFILE_ARG_UNSET,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    post_conflict_window_days: int | float | None = None,
+) -> ChatAnswer:
     route = route_question(question)
     profile = _resolve_profile(settings, profile_id)
     if settings is not None and profile is None and is_relationship_profile_question(question):
-        return compose_answer(_profile_missing_result(route.intents[0]), mode=mode)
+        return ChatAnswer(text=compose_answer(_profile_missing_result(route.intents[0]), mode=mode))
     memory = memory or build_memory(settings)
     clean_date_from = _clean_date(date_from)
     clean_date_to = _clean_date(date_to)
@@ -62,7 +98,10 @@ def answer_question(
         post_conflict_window_days=post_conflict_window_days,
     )
     person_names = [profile.profile_name] if profile else None
-    return compose_answer(result, mode=mode, person_names=person_names)
+    return ChatAnswer(
+        text=compose_answer(result, mode=mode, person_names=person_names),
+        review_targets=_review_targets_from_result(result, mode=mode, person_names=person_names),
+    )
 
 
 def execute_plan(
@@ -383,15 +422,18 @@ def _load_saved_relationship_events(
     )
     events: list[EventEvidence] = []
     for row in rows:
+        if row["review_status"] == "rejected":
+            continue
         evidence_rows = repo.list_evidence(event_id=int(row["id"]), limit=8)
         pointer = _first_source_pointer(evidence_rows, fallback=f"relationship_event:{row['id']}")
         source_type = _first_source_type(evidence_rows, fallback="manual")
+        summary = _review_status_summary_prefix(str(row["review_status"])) + str(row["summary"])
         events.append(
             EventEvidence(
                 source_id=f"relationship-db-event-{row['id']}",
                 date=str(row["event_date"]),
                 role="primary",
-                summary=_safe_db_text(str(row["summary"]), mode=mode, person_names=[profile.profile_name]),
+                summary=_safe_db_text(summary, mode=mode, person_names=[profile.profile_name]),
                 excerpt=None,
                 confidence=float(row["confidence"]),
                 evidence_strength=float(row["evidence_strength"]),
@@ -403,6 +445,9 @@ def _load_saved_relationship_events(
                 metadata={
                     "source": "relationship_db",
                     "relationship_event_id": int(row["id"]),
+                    "event_type": str(row["event_type"]),
+                    "review_status": str(row["review_status"]),
+                    "event_date": str(row["event_date"]),
                     "primary_source_type": source_type,
                 },
             )
@@ -432,6 +477,38 @@ def _with_profile_context(result: AnalysisResult, profile: ProfileContext | None
         "選択profileはユーザー手動設定のみを使います。関係ラベルやID対応はAIで推定しません。",
     ]
     return replace(result, aggregate=aggregate, cautions=cautions)
+
+
+def _review_targets_from_result(
+    result: AnalysisResult,
+    *,
+    mode: str,
+    person_names: list[str] | None,
+) -> tuple[ReviewTarget, ...]:
+    targets: list[ReviewTarget] = []
+    seen: set[int] = set()
+    for item in result.evidence:
+        event_id = item.metadata.get("relationship_event_id")
+        if event_id is None:
+            continue
+        parsed_id = int(event_id)
+        if parsed_id in seen:
+            continue
+        seen.add(parsed_id)
+        label = _safe_db_text(
+            f"{parsed_id}: {item.date} {item.summary}",
+            mode=mode,
+            person_names=person_names or [],
+        )
+        targets.append(
+            ReviewTarget(
+                event_id=parsed_id,
+                label=label,
+                event_type=str(item.metadata.get("event_type", "other")),
+                review_status=str(item.metadata.get("review_status", "unreviewed")),
+            )
+        )
+    return tuple(targets)
 
 
 def _relationship_event_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:
@@ -610,6 +687,14 @@ def _safe_db_text(text: str, *, mode: str, person_names: list[str]) -> str:
     from relationship_lifelog_agent.privacy.guard import sanitize_answer
 
     return sanitize_answer(text, mode=mode, person_names=person_names)
+
+
+def _review_status_summary_prefix(review_status: str) -> str:
+    if review_status == "verified":
+        return "人間確認済み: "
+    if review_status == "corrected":
+        return "人間修正済み: "
+    return ""
 
 
 def _memory_warnings(memory: object) -> list[str]:

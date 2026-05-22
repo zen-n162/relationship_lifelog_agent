@@ -3,7 +3,7 @@ from relationship_lifelog_agent.config import AdapterSettings, PathSettings, Rel
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import detect_answer_safety_violations
 from relationship_lifelog_agent.profiles import PROFILE_NONE_VALUE
-from relationship_lifelog_agent.ui.chat_ui import build_chat_ui, build_ui_answer
+from relationship_lifelog_agent.ui.chat_ui import build_chat_ui, build_ui_answer, build_ui_chat_answer, save_review_action_from_ui
 
 
 def test_chat_ui_builds_with_safe_defaults() -> None:
@@ -112,6 +112,71 @@ def test_chat_ui_uses_saved_relationship_db_candidate(tmp_path) -> None:
 
     assert "保存済みの喧嘩候補" in answer
     assert "total_candidates: 1" in answer
+
+
+def test_chat_ui_returns_review_targets_for_saved_candidates(tmp_path) -> None:
+    settings, profile_id = _settings_with_profile(
+        tmp_path,
+        adapter=AdapterSettings(backend="upstream_readonly"),
+    )
+    repo = RelationshipRepository(settings.paths.relationship_db)
+    event_id = repo.create_event(
+        profile_id=profile_id,
+        event_type="conflict",
+        event_date="2025-03-05",
+        summary="保存済みの喧嘩候補。",
+        status="candidate",
+        review_status="unreviewed",
+        confidence=0.61,
+        evidence_strength=0.58,
+    )
+    repo.create_evidence(
+        event_id=event_id,
+        source_type="manual",
+        source_id="saved-candidate",
+        source_pointer="manual:saved-candidate",
+        summary="保存済みcandidateのsource pointer。",
+        confidence=0.6,
+        evidence_strength=0.58,
+    )
+
+    chat_answer = build_ui_chat_answer(
+        "喧嘩はどのくらいしている？",
+        base_settings=settings,
+        selected_backend="upstream_readonly",
+        selected_profile=str(profile_id),
+        date_from="2025-03-01",
+        date_to="2025-03-31",
+        post_conflict_window_days=14,
+        mode="private",
+    )
+
+    assert chat_answer.review_targets
+    assert chat_answer.review_targets[0].event_id == event_id
+    assert "保存済みの喧嘩候補" in chat_answer.review_targets[0].label
+
+
+def test_chat_ui_save_review_action_updates_event(tmp_path) -> None:
+    settings, profile_id = _settings_with_profile(tmp_path)
+    repo = RelationshipRepository(settings.paths.relationship_db)
+    event_id = repo.create_event(
+        profile_id=profile_id,
+        event_type="conflict",
+        event_date="2025-03-05",
+        summary="保存済みの喧嘩候補。",
+    )
+
+    status = save_review_action_from_ui(
+        str(event_id),
+        "reject",
+        "not this one",
+        [{"event_id": event_id}],
+        settings.paths.relationship_db,
+    )
+
+    assert "レビューを保存しました" in status
+    assert repo.get_event(event_id)["review_status"] == "rejected"
+    assert repo.list_review_actions(event_id=event_id)[0]["action"] == "reject"
 
 
 def test_chat_ui_public_mode_redacts_saved_candidate_profile_name(tmp_path) -> None:
