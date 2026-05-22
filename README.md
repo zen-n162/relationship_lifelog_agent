@@ -50,6 +50,26 @@ modified or deleted.
 pytest
 ```
 
+## Eval
+
+The eval runner checks mock/private/public answer quality and safety. It covers
+intent routing, required answer sections, evidence presence, forbidden phrase
+absence, public redaction, weak-evidence cautions, no inner-feeling assertion,
+no relationship-label inference, raw-data leakage patterns, and mock QA
+consistency.
+
+```bash
+python eval/run_eval.py
+python eval/run_eval.py --format json --output data/exports/eval_result.json
+```
+
+`upstream_readonly` eval cases are optional and skipped by default. Run them only
+when local read-only upstream paths are configured:
+
+```bash
+python eval/run_eval.py --include-upstream --config config.local.yaml
+```
+
 ## Manual Relationship Profiles
 
 Relationship labels and upstream source IDs are user-manual only. The app never

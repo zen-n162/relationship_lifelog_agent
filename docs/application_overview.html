@@ -288,6 +288,7 @@
         <span class="badge">SQLite</span>
         <span class="badge">Gradio UI</span>
         <span class="badge">Manual profiles</span>
+        <span class="badge">Safety evals</span>
         <span class="badge">No external APIs</span>
         <span class="badge">share=False</span>
       </div>
@@ -330,6 +331,13 @@
           <p>
             件数、日付、候補の集計はPythonで計算します。喧嘩や仲直りを断定せず、
             事実と推定を分けて、根拠・信頼度・注意を含む回答を返します。
+          </p>
+        </article>
+        <article class="card">
+          <h3>evalで継続確認</h3>
+          <p>
+            mock/private/publicの質問ケースを使い、intent、回答形式、根拠、
+            禁止表現、public redaction、raw data leakageを継続的に検査します。
           </p>
         </article>
       </div>
@@ -443,6 +451,11 @@
               <td><code>relationship_review_actions</code>に履歴を残し、<code>relationship_events.review_status</code>を更新します。reject済みcandidateは通常回答から除外します。</td>
             </tr>
             <tr>
+              <td><code>eval/</code></td>
+              <td>mock / upstream_readonly / private / publicの安全性と回答品質を継続評価します。</td>
+              <td><code>python eval/run_eval.py</code>でMarkdownまたはJSONの評価結果を出力します。upstream_readonly caseはローカル設定済みの場合だけ任意実行します。</td>
+            </tr>
+            <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
               <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、最小review actionを含む折りたたみ設定を実装済みです。</td>
@@ -506,6 +519,9 @@ python -m relationship_lifelog_agent.app</code></pre>
   --date-to 2025-03-31 \
   --backend mock \
   --write</code></pre>
+      <p>継続評価はmock backendで安定実行できます。public/private安全性、禁止表現、根拠の有無、弱い根拠への注意、関係ラベル推定の抑制を確認します。</p>
+      <pre><code>python eval/run_eval.py
+python eval/run_eval.py --format json --output data/exports/eval_result.json</code></pre>
       <pre><code>pytest</code></pre>
     </section>
 

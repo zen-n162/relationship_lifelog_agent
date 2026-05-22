@@ -1,13 +1,98 @@
 cases:
-  - id: mock_conflict_frequency
+  - id: mock_conflict_frequency_private
     question: "喧嘩はどのくらいしている？"
     mode: private
-  - id: mock_post_conflict_activity
+    backend: mock
+    expected_intents:
+      - conflict_frequency
+    required_sections:
+      - 要約
+      - 集計
+      - 具体例
+      - 根拠
+      - 信頼度
+      - 注意
+    require_evidence: true
+    required_substrings:
+      - "喧嘩候補"
+      - "total_candidates"
+      - "弱い信号だけでは喧嘩とは扱いません"
+    forbidden_phrases:
+      - "確実に喧嘩"
+      - "相手は冷め"
+      - "相手は怒っていた"
+
+  - id: mock_post_conflict_activity_private
     question: "喧嘩の後にどこへ行っている？"
     mode: private
-  - id: mock_emotional_note_lookup
+    backend: mock
+    expected_intents:
+      - post_conflict_activity
+    required_sections:
+      - 要約
+      - 集計
+      - 根拠
+      - 注意
+    require_evidence: true
+    required_substrings:
+      - "外出候補"
+      - "仲直りだったとは断定しません"
+    forbidden_phrases:
+      - "この写真はデート確定"
+      - "確実に喧嘩"
+
+  - id: mock_emotional_note_lookup_private
     question: "その時、自分は何を考えていた？"
     mode: private
-  - id: mock_monthly_review
+    backend: mock
+    expected_intents:
+      - emotional_note_lookup
+    required_sections:
+      - 要約
+      - 集計
+      - 根拠
+      - 注意
+    require_evidence: true
+    required_substrings:
+      - "自分側"
+      - "メモ"
+      - "相手の内面"
+    forbidden_phrases:
+      - "相手は怒っていた"
+      - "相手は愛情がなかった"
+
+  - id: mock_monthly_review_private
     question: "2025年1月の関係を振り返って"
     mode: private
+    backend: mock
+    expected_intents:
+      - monthly_relationship_review
+    required_sections:
+      - 要約
+      - 集計
+      - 根拠
+      - 注意
+    require_evidence: true
+    required_substrings:
+      - "2025-01"
+      - "月次"
+      - "採点"
+    forbidden_phrases:
+      - "関係は終わっていた"
+      - "破局寸前"
+
+  - id: mock_general_qa_private
+    question: "今日は何を確認できますか？"
+    mode: private
+    backend: mock
+    expected_intents:
+      - general_relationship_qa
+    required_sections:
+      - 要約
+      - 集計
+      - 注意
+    require_evidence: false
+    required_substrings:
+      - "MVP"
+    forbidden_phrases:
+      - "診断できます"

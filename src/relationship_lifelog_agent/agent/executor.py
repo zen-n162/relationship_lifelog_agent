@@ -367,7 +367,11 @@ def _general_relationship_qa(results: dict[str, list[Any]] | None = None) -> Ana
         aggregate={"supported_mvp_intents": 4, "adapter_backend": backend},
         confidence=0.35,
         evidence_strength=0.0,
-        cautions=[_backend_caution(backend)],
+        cautions=[
+            _backend_caution(backend),
+            "関係ラベルや親密度はAIで推定しません。必要な場合は手動profile設定だけを使います。",
+            "相手の内心は記録から断定できません。",
+        ],
     )
 
 
