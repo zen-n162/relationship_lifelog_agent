@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from relationship_lifelog_agent.agent.memory import build_memory
-from relationship_lifelog_agent.analytics.dry_run import run_relationship_dry_run, write_dry_run_candidates
+from relationship_lifelog_agent.analytics.dry_run import PRIVACY_LEVELS, run_relationship_dry_run, write_dry_run_candidates
 from relationship_lifelog_agent.app import main as app_main
 from relationship_lifelog_agent.config import load_config
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
@@ -159,18 +159,22 @@ def _analyze_main(argv: list[str]) -> None:
     if profile is None:
         raise SystemExit(f"profile not found: {args.profile_id}")
     memory = build_memory(settings)
-    result = run_relationship_dry_run(
-        memory=memory,
-        settings=settings,
-        profile=profile,
-        date_from=args.date_from,
-        date_to=args.date_to,
-        backend=args.backend,
-        mode=args.mode,
-        output_path=args.output,
-    )
+    try:
+        result = run_relationship_dry_run(
+            memory=memory,
+            settings=settings,
+            profile=profile,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            backend=args.backend,
+            mode=args.mode,
+            privacy_level=args.privacy_level,
+            output_path=args.output,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.output:
-        print(f"dry-run report written: {args.output}")
+        print("dry-run report written: [redacted_path]")
     else:
         print("dry-run report written: none")
     if args.write:
@@ -180,6 +184,7 @@ def _analyze_main(argv: list[str]) -> None:
             result=result,
             profile_id=args.profile_id,
             mode=args.mode,
+            privacy_level=args.privacy_level,
         )
         print(f"relationship_events written: {write_result.events_written}")
         print(f"relationship_event_evidence written: {write_result.evidence_written}")
@@ -207,6 +212,7 @@ def _build_analyze_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--date-to", required=True)
     dry_run.add_argument("--backend", choices=("mock", "upstream_readonly"), default="mock")
     dry_run.add_argument("--mode", choices=("private", "public"), default="private")
+    dry_run.add_argument("--privacy-level", choices=PRIVACY_LEVELS, default="redacted")
     dry_run.add_argument("--output", default=None)
     dry_run.add_argument("--write", action="store_true", help="Explicitly save candidates into the relationship DB.")
     return parser

@@ -22,19 +22,30 @@ from relationship_lifelog_agent.analytics.reconciliation import build_reconcilia
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
-from relationship_lifelog_agent.privacy.redaction import redact_public_text
-from relationship_lifelog_agent.privacy.redaction import redact_evidence_for_mode
+from relationship_lifelog_agent.privacy.redaction import (
+    FACE_CROP_RE,
+    GPS_RE,
+    LINE_FULL_TEXT_RE,
+    NOTE_FULL_TEXT_RE,
+    PHOTO_PATH_RE,
+    PRIVATE_PATH_RE,
+    SOURCE_PATH_RE,
+    redact_evidence_for_mode,
+    redact_public_text,
+)
 from relationship_lifelog_agent.profiles import ProfileContext
 
 
 MAX_STORED_SUMMARY_CHARS = 240
 MAX_STORED_EXCERPT_CHARS = 120
+PRIVACY_LEVELS = ("counts-only", "redacted", "private")
 
 
 @dataclass(frozen=True)
 class DryRunResult:
     report_markdown: str
     source_counts: dict[str, int]
+    privacy_level: str
     conflict_candidates: list[RelationshipEvent]
     minor_misunderstanding_candidates: list[RelationshipEvent]
     reconciliation_candidates: list[RelationshipEvent]
@@ -61,9 +72,12 @@ def run_relationship_dry_run(
     date_to: str,
     backend: str,
     mode: str = "private",
+    privacy_level: str = "redacted",
     output_path: str | Path | None = None,
 ) -> DryRunResult:
-    fetched = _fetch_sources(memory, profile=profile, date_from=date_from, date_to=date_to, backend=backend, mode=mode)
+    _validate_privacy_level(privacy_level, mode=mode)
+    adapter_mode = _adapter_mode_for_privacy(mode=mode, privacy_level=privacy_level)
+    fetched = _fetch_sources(memory, profile=profile, date_from=date_from, date_to=date_to, backend=backend, mode=adapter_mode)
     conflicts = build_conflict_candidates(
         line_evidence=fetched["line"],
         note_evidence=fetched["notes"],
@@ -102,6 +116,7 @@ def run_relationship_dry_run(
         date_to=date_to,
         backend=backend,
         mode=mode,
+        privacy_level=privacy_level,
         profile=profile,
         source_counts=_source_counts(fetched),
         conflicts=conflicts,
@@ -120,6 +135,7 @@ def run_relationship_dry_run(
     return DryRunResult(
         report_markdown=report,
         source_counts=_source_counts(fetched),
+        privacy_level=privacy_level,
         conflict_candidates=conflict_candidates,
         minor_misunderstanding_candidates=minor_candidates,
         reconciliation_candidates=reconciliations,
@@ -135,9 +151,12 @@ def write_dry_run_candidates(
     result: DryRunResult,
     profile_id: int,
     mode: str = "private",
+    privacy_level: str | None = None,
 ) -> WriteResult:
     """Persist dry-run candidates only when explicitly requested by the user."""
 
+    privacy_level = privacy_level or result.privacy_level
+    _validate_privacy_level(privacy_level, mode=mode)
     events_written = 0
     evidence_written = 0
     activities_written = 0
@@ -163,13 +182,22 @@ def write_dry_run_candidates(
         if existing_id is not None:
             event_id_map[event.event_id] = existing_id
             duplicate_count += 1
-            warnings.append(f"duplicate skipped: {event.event_type} {event.date} {source_pointer}")
+            warnings.append(
+                "duplicate skipped: "
+                f"{event.event_type} {event.date} "
+                f"{_storage_text(source_pointer, mode=mode, privacy_level=privacy_level, max_chars=180)}"
+            )
             continue
         event_id = repo.create_event(
             profile_id=profile_id,
             event_type=event.event_type,
             event_date=event.date,
-            summary=_storage_text(event.summary, mode=mode, max_chars=MAX_STORED_SUMMARY_CHARS),
+            summary=_storage_text(
+                _event_storage_summary(event, privacy_level=privacy_level),
+                mode=mode,
+                privacy_level=privacy_level,
+                max_chars=MAX_STORED_SUMMARY_CHARS,
+            ),
             status="candidate",
             review_status="unreviewed",
             confidence=event.confidence,
@@ -181,7 +209,7 @@ def write_dry_run_candidates(
         event_id_map[event.event_id] = event_id
         events_written += 1
         for item in event.evidence:
-            safe = _storage_evidence(item, mode=mode)
+            safe = _storage_evidence(item, mode=mode, privacy_level=privacy_level)
             repo.create_evidence(
                 event_id=event_id,
                 source_type=safe.source_type,
@@ -200,14 +228,23 @@ def write_dry_run_candidates(
         conflict_event_id = event_id_map.get(activity.conflict_event_id)
         if _post_conflict_activity_exists(repo, conflict_event_id=conflict_event_id, activity=activity):
             duplicate_count += 1
-            warnings.append(f"duplicate skipped: post_conflict_activity {activity.date} {activity.place_label}")
+            warnings.append(
+                "duplicate skipped: "
+                f"post_conflict_activity {activity.date} "
+                f"{_storage_text(activity.place_label, mode=mode, privacy_level=privacy_level, max_chars=80)}"
+            )
             continue
         repo.create_post_conflict_activity(
             conflict_event_id=conflict_event_id,
             activity_event_id=None,
             activity_date=activity.date,
             days_after_conflict=activity.days_after_conflict,
-            place_label=_storage_text(activity.place_label, mode=mode, max_chars=80),
+            place_label=_storage_text(
+                _activity_storage_label(activity, privacy_level=privacy_level),
+                mode=mode,
+                privacy_level=privacy_level,
+                max_chars=80,
+            ),
             activity_type=activity.activity_type,
             confidence=activity.confidence,
             evidence_strength=activity.evidence_strength,
@@ -262,6 +299,7 @@ def _render_report(
     date_to: str,
     backend: str,
     mode: str,
+    privacy_level: str,
     profile: ProfileContext | None,
     source_counts: dict[str, int],
     conflicts: list[RelationshipEvent],
@@ -272,29 +310,41 @@ def _render_report(
     warnings: list[str],
 ) -> str:
     counts = conflict_counts(conflicts)
+    person_names = _profile_person_names(profile)
     sections = [
         "# Relationship Event Candidates Dry Run",
-        "## Dry-run status\n- relationship DBには候補を書き込んでいません。\n- 上流データはread-onlyで参照します。\n- raw LINE全文、raw note全文、正確GPS、顔情報、写真実体は出力しません。",
+        "## Dry-run status\n"
+        "- relationship DBには候補を書き込んでいません。\n"
+        "- 上流データはread-onlyで参照します。\n"
+        "- raw LINE全文、raw note全文、正確GPS、顔情報、写真実体は出力しません。\n"
+        f"- privacy_level: {privacy_level}",
         f"## 対象期間\n- date_from: {date_from}\n- date_to: {date_to}\n- backend: {backend}\n- mode: {mode}",
-        "## 使用profile\n" + _format_profile(profile, mode),
+        "## 使用profile\n" + _format_profile(profile, mode, privacy_level),
         "## 取得できたsource counts\n" + _format_dict(source_counts),
-        "## conflict candidates\n" + _format_events([item for item in conflicts if item.event_type == "conflict"], mode),
-        "## minor misunderstanding candidates\n" + _format_events([item for item in conflicts if item.event_type == "minor_misunderstanding"], mode),
-        "## reconciliation candidates\n" + _format_events(reconciliations, mode),
-        "## post-conflict outing candidates\n" + _format_outings(outings, mode),
-        "## emotional note candidates\n" + _format_adapter_evidence(emotional_notes, mode),
-        "## monthly relationship summary\n" + _format_monthly(monthly_summaries),
+        "## conflict candidates\n"
+        + _format_events([item for item in conflicts if item.event_type == "conflict"], mode, privacy_level, person_names),
+        "## minor misunderstanding candidates\n"
+        + _format_events(
+            [item for item in conflicts if item.event_type == "minor_misunderstanding"],
+            mode,
+            privacy_level,
+            person_names,
+        ),
+        "## reconciliation candidates\n" + _format_events(reconciliations, mode, privacy_level, person_names),
+        "## post-conflict outing candidates\n" + _format_outings(outings, mode, privacy_level, person_names),
+        "## emotional note candidates\n" + _format_adapter_evidence(emotional_notes, mode, privacy_level, person_names),
+        "## monthly relationship summary\n" + _format_monthly(monthly_summaries, mode, privacy_level, person_names),
         "## evidence strength 分布\n" + _format_strength_distribution([*conflicts, *reconciliations, *emotional_notes]),
         "## candidate counts\n" + _format_dict({**counts, "reconciliation_candidates": len(reconciliations), "post_conflict_outing_candidates": len(outings), "emotional_note_candidates": len(emotional_notes)}),
-        "## warnings\n" + _format_warnings(warnings),
+        "## warnings\n" + _format_warnings(warnings, mode, privacy_level, person_names),
     ]
-    return sanitize_answer("\n\n".join(sections), mode=mode)
+    return _display_text("\n\n".join(sections), mode=mode, privacy_level=privacy_level, person_names=person_names)
 
 
-def _format_profile(profile: ProfileContext | None, mode: str) -> str:
+def _format_profile(profile: ProfileContext | None, mode: str, privacy_level: str) -> str:
     if profile is None:
         return "- profile未設定。関係ラベルやID対応は推定していません。"
-    if mode == "public":
+    if mode == "public" or privacy_level in {"counts-only", "redacted"}:
         return "\n".join(
             [
                 f"- profile_id: {profile.id}",
@@ -315,46 +365,75 @@ def _format_profile(profile: ProfileContext | None, mode: str) -> str:
     return "\n".join(lines)
 
 
-def _format_events(events: list[RelationshipEvent], mode: str) -> str:
+def _format_events(events: list[RelationshipEvent], mode: str, privacy_level: str, person_names: list[str]) -> str:
     if not events:
         return "- 候補はありません。"
+    if privacy_level == "counts-only":
+        return f"- count: {len(events)}\n- detail: counts-only privacy levelのため候補本文は省略しています。"
     return "\n".join(
-        f"- {event.date}: {event.summary} "
-        f"(confidence={event.confidence:.2f}, evidence_strength={event.evidence_strength:.2f}, source={_source_pointer(event.evidence, mode)})"
+        f"- {event.date}: {_display_text(event.summary, mode=mode, privacy_level=privacy_level, person_names=person_names)} "
+        f"(confidence={event.confidence:.2f}, evidence_strength={event.evidence_strength:.2f}, "
+        f"source={_source_pointer(event.evidence, mode, privacy_level, person_names)})"
         for event in events
     )
 
 
-def _format_outings(outings: list[PostConflictActivity], mode: str) -> str:
+def _format_outings(outings: list[PostConflictActivity], mode: str, privacy_level: str, person_names: list[str]) -> str:
     if not outings:
         return "- 候補はありません。"
+    if privacy_level == "counts-only":
+        return f"- count: {len(outings)}\n- detail: counts-only privacy levelのため候補本文は省略しています。"
     lines = []
     for outing in outings:
         evidence = [redact_evidence_for_mode(item, mode=mode) for item in outing.evidence]
+        place_label = _display_text(outing.place_label, mode=mode, privacy_level=privacy_level, person_names=person_names)
         lines.append(
             f"- {outing.date}: 喧嘩候補の{outing.days_after_conflict}日後の外出候補 "
-            f"(place={outing.place_label}, confidence={outing.confidence:.2f}, evidence_strength={outing.evidence_strength:.2f}, source={_source_pointer(evidence, mode)})"
+            f"(place={place_label}, confidence={outing.confidence:.2f}, evidence_strength={outing.evidence_strength:.2f}, "
+            f"source={_source_pointer(evidence, mode, privacy_level, person_names)})"
         )
     return "\n".join(lines)
 
 
-def _format_adapter_evidence(items: list[AdapterEvidence], mode: str) -> str:
+def _format_adapter_evidence(items: list[AdapterEvidence], mode: str, privacy_level: str, person_names: list[str]) -> str:
     if not items:
         return "- 候補はありません。"
+    if privacy_level == "counts-only":
+        return f"- count: {len(items)}\n- detail: counts-only privacy levelのため候補本文は省略しています。"
     lines = []
     for item in items:
         evidence = redact_evidence_for_mode(item.as_evidence_item(), mode=mode)
+        summary = _display_text(evidence.summary, mode=mode, privacy_level=privacy_level, person_names=person_names)
         lines.append(
-            f"- {evidence.date}: {evidence.summary} "
-            f"(confidence={evidence.confidence:.2f}, evidence_strength={evidence.evidence_strength:.2f}, source={evidence.source_pointer})"
+            f"- {evidence.date}: {summary} "
+            f"(confidence={evidence.confidence:.2f}, evidence_strength={evidence.evidence_strength:.2f}, "
+            f"source={_display_source_pointer(evidence.source_pointer, mode, privacy_level, person_names)})"
         )
     return "\n".join(lines)
 
 
-def _format_monthly(monthly_summaries: list[dict[str, object]]) -> str:
+def _format_monthly(
+    monthly_summaries: list[dict[str, object]],
+    mode: str,
+    privacy_level: str,
+    person_names: list[str],
+) -> str:
     if not monthly_summaries:
         return "- 月次summaryはありません。"
-    return "\n".join(f"- {item['month']}: {item['summary']}" for item in monthly_summaries)
+    if privacy_level == "counts-only":
+        return "\n".join(
+            "- {month}: conflict_candidates={conflict_candidates}, "
+            "minor_misunderstanding_candidates={minor_misunderstanding_candidates}, "
+            "reconciliation_candidates={reconciliation_candidates}, "
+            "post_conflict_outing_candidates={post_conflict_outing_candidates}, "
+            "emotional_note_candidates={emotional_note_candidates}".format(**item)
+            for item in monthly_summaries
+        )
+    return "\n".join(
+        f"- {item['month']}: "
+        f"{_display_text(str(item['summary']), mode=mode, privacy_level=privacy_level, person_names=person_names)}"
+        for item in monthly_summaries
+    )
 
 
 def _format_strength_distribution(items: list[Any]) -> str:
@@ -374,17 +453,27 @@ def _format_dict(values: dict[str, object]) -> str:
     return "\n".join(f"- {key}: {value}" for key, value in values.items())
 
 
-def _format_warnings(warnings: list[str]) -> str:
+def _format_warnings(warnings: list[str], mode: str, privacy_level: str, person_names: list[str]) -> str:
     if not warnings:
         return "- 追加warningはありません。"
-    return "\n".join(f"- {warning}" for warning in warnings)
+    return "\n".join(
+        f"- {_display_text(warning, mode=mode, privacy_level=privacy_level, person_names=person_names)}"
+        for warning in warnings
+    )
 
 
-def _source_pointer(evidence: tuple[EvidenceItem, ...] | list[EvidenceItem], mode: str) -> str:
+def _source_pointer(
+    evidence: tuple[EvidenceItem, ...] | list[EvidenceItem],
+    mode: str,
+    privacy_level: str,
+    person_names: list[str],
+) -> str:
     if not evidence:
         return "none"
+    if privacy_level == "counts-only":
+        return "omitted"
     safe = redact_evidence_for_mode(evidence[0], mode=mode)
-    return str(safe.source_pointer)
+    return _display_source_pointer(safe.source_pointer, mode, privacy_level, person_names)
 
 
 def _emotional_notes(notes: list[NoteEvidence]) -> list[NoteEvidence]:
@@ -507,34 +596,132 @@ def _post_conflict_activity_exists(
     return row is not None
 
 
-def _storage_evidence(item: EvidenceItem, *, mode: str) -> EvidenceItem:
+def _storage_evidence(item: EvidenceItem, *, mode: str, privacy_level: str) -> EvidenceItem:
     safe = redact_evidence_for_mode(item, mode=mode)
     excerpt = (
         None
-        if mode == "public" or safe.excerpt is None
-        else _storage_text(safe.excerpt, mode=mode, max_chars=MAX_STORED_EXCERPT_CHARS)
+        if mode == "public" or privacy_level in {"counts-only", "redacted"} or safe.excerpt is None
+        else _storage_text(
+            safe.excerpt,
+            mode=mode,
+            privacy_level=privacy_level,
+            max_chars=MAX_STORED_EXCERPT_CHARS,
+        )
     )
+    summary = _evidence_storage_summary(safe, privacy_level=privacy_level)
     return EvidenceItem(
         source_type=safe.source_type,
-        source_id=_storage_text(safe.source_id, mode=mode, max_chars=120),
+        source_id=_storage_text(safe.source_id, mode=mode, privacy_level=privacy_level, max_chars=120),
         date=safe.date,
         role=safe.role,
-        summary=_storage_text(safe.summary, mode=mode, max_chars=MAX_STORED_SUMMARY_CHARS),
+        summary=_storage_text(summary, mode=mode, privacy_level=privacy_level, max_chars=MAX_STORED_SUMMARY_CHARS),
         excerpt=excerpt,
         confidence=safe.confidence,
         evidence_strength=safe.evidence_strength,
         sensitivity=safe.sensitivity,
-        source_pointer=_storage_text(str(safe.source_pointer), mode=mode, max_chars=180),
+        source_pointer=_storage_text(str(safe.source_pointer), mode=mode, privacy_level=privacy_level, max_chars=180),
         metadata={},
     )
 
 
-def _storage_text(text: str | None, *, mode: str, max_chars: int) -> str:
+def _storage_text(
+    text: str | None,
+    *,
+    mode: str,
+    max_chars: int,
+    privacy_level: str = "private",
+    person_names: list[str] | None = None,
+) -> str:
     if text is None:
         return ""
-    safe = sanitize_answer(text, mode=mode)
-    safe = redact_public_text(safe)
+    safe = _display_text(text, mode=mode, privacy_level=privacy_level, person_names=person_names or [])
     safe = " ".join(safe.split())
     if len(safe) <= max_chars:
         return safe
     return safe[: max_chars - 1].rstrip() + "…"
+
+
+def _validate_privacy_level(privacy_level: str, *, mode: str) -> None:
+    if privacy_level not in PRIVACY_LEVELS:
+        choices = ", ".join(PRIVACY_LEVELS)
+        raise ValueError(f"privacy_level must be one of: {choices}")
+    if mode == "public" and privacy_level == "private":
+        raise ValueError("privacy-level private is not allowed in public mode")
+
+
+def _adapter_mode_for_privacy(*, mode: str, privacy_level: str) -> str:
+    if mode == "public" or privacy_level in {"counts-only", "redacted"}:
+        return "public"
+    return "private"
+
+
+def _display_text(
+    text: str,
+    *,
+    mode: str,
+    privacy_level: str,
+    person_names: list[str],
+) -> str:
+    if mode == "public" or privacy_level in {"counts-only", "redacted"}:
+        return redact_public_text(sanitize_answer(text, mode="public", person_names=person_names), person_names=person_names)
+    return _redact_always_private_hazards(sanitize_answer(text, mode="private"))
+
+
+def _display_source_pointer(
+    source_pointer: str | None,
+    mode: str,
+    privacy_level: str,
+    person_names: list[str],
+) -> str:
+    if not source_pointer:
+        return "none"
+    if privacy_level == "redacted" or mode == "public":
+        return "[redacted_source_pointer]"
+    if privacy_level == "counts-only":
+        return "omitted"
+    return _display_text(str(source_pointer), mode=mode, privacy_level=privacy_level, person_names=person_names)
+
+
+def _redact_always_private_hazards(text: str) -> str:
+    safe = LINE_FULL_TEXT_RE.sub("[LINE full text redacted]", text)
+    safe = NOTE_FULL_TEXT_RE.sub("[note full text redacted]", safe)
+    safe = SOURCE_PATH_RE.sub("[source file path redacted]", safe)
+    safe = FACE_CROP_RE.sub("[face data redacted]", safe)
+    safe = PHOTO_PATH_RE.sub("[real photo redacted]", safe)
+    safe = GPS_RE.sub("[exact GPS redacted]", safe)
+    safe = PRIVATE_PATH_RE.sub("[private path redacted]", safe)
+    return safe
+
+
+def _profile_person_names(profile: ProfileContext | None) -> list[str]:
+    if profile is None or not profile.profile_name:
+        return []
+    return [profile.profile_name]
+
+
+def _event_storage_summary(event: RelationshipEvent, *, privacy_level: str) -> str:
+    if privacy_level == "counts-only":
+        return f"{_event_type_label(event.event_type)} ({event.date})"
+    return event.summary
+
+
+def _evidence_storage_summary(item: EvidenceItem, *, privacy_level: str) -> str:
+    if privacy_level == "counts-only":
+        return f"{item.source_type} evidence ({item.role})"
+    return item.summary
+
+
+def _activity_storage_label(activity: PostConflictActivity, *, privacy_level: str) -> str:
+    if privacy_level == "counts-only":
+        return "post_conflict_activity_candidate"
+    return activity.place_label
+
+
+def _event_type_label(event_type: str) -> str:
+    labels = {
+        "conflict": "喧嘩候補",
+        "minor_misunderstanding": "軽いすれ違い候補",
+        "reconciliation": "仲直り候補",
+        "emotional_note": "感情メモ候補",
+    }
+    return labels.get(event_type, "関係イベント候補")

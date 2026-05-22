@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from relationship_lifelog_agent.adapters.types import LineEvidence
 from relationship_lifelog_agent.analytics.conflict import build_conflict_candidates
 from relationship_lifelog_agent.cli import main as cli_main
@@ -39,6 +41,115 @@ def test_mock_backend_dry_run_report_is_generated_without_writing_events(tmp_pat
     assert "conflict candidates" in report
     assert repo.list_events() == []
     _assert_relationship_events_table_empty(tmp_path / "relationship.sqlite")
+
+
+def test_dry_run_counts_only_omits_candidate_body_and_source_pointers(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+    output_path = tmp_path / "dry_run_counts.md"
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--privacy-level",
+            "counts-only",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    report = output_path.read_text(encoding="utf-8")
+    assert "privacy_level: counts-only" in report
+    assert "予定変更への不満" not in report
+    assert "予定の話が合わず" not in report
+    assert "不安もあるが" not in report
+    assert "mock-line-" not in report
+    assert "[redacted_source_pointer]" not in report
+    assert "candidate counts" in report
+    assert detect_answer_safety_violations(report) == []
+
+
+def test_dry_run_redacted_omits_profile_label_paths_and_excerpts(tmp_path, capsys) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile(
+        "山田太郎",
+        person_source_id="/home/user/private/person.json",
+        line_speaker_source_id="/home/user/private/line.json",
+        relationship_label="partner",
+    )
+    output_path = tmp_path / "dry_run_redacted.md"
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--privacy-level",
+            "redacted",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    report = output_path.read_text(encoding="utf-8")
+    assert "dry-run report written: [redacted_path]" in captured.out
+    assert str(output_path) not in captured.out
+    assert "山田太郎" not in report
+    assert "partner" not in report
+    assert "/home/user/private" not in report
+    assert "予定の話が合わず" not in report
+    assert "[redacted_source_pointer]" in report
+    assert detect_answer_safety_violations(report, mode="public", person_names=["山田太郎"]) == []
+
+
+def test_public_mode_rejects_private_privacy_level(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main(
+            [
+                "--config",
+                str(config_path),
+                "analyze",
+                "dry-run",
+                "--profile-id",
+                str(profile_id),
+                "--date-from",
+                "2025-01-01",
+                "--date-to",
+                "2025-03-31",
+                "--backend",
+                "mock",
+                "--mode",
+                "public",
+                "--privacy-level",
+                "private",
+            ]
+        )
+
+    assert "privacy-level private is not allowed in public mode" in str(exc_info.value)
 
 
 def test_weak_signal_only_does_not_create_conflict_candidate() -> None:
@@ -230,6 +341,74 @@ def test_dry_run_write_does_not_store_raw_full_text_or_long_excerpts(tmp_path) -
     assert "/home/" not in joined
     assert ".jpg" not in joined
     assert all(len(str(row["excerpt"] or "")) <= 120 for row in _evidence_rows(tmp_path / "relationship.sqlite"))
+
+
+def test_dry_run_write_counts_only_omits_evidence_excerpts_and_source_summaries(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--privacy-level",
+            "counts-only",
+            "--write",
+        ]
+    )
+
+    evidence = _evidence_rows(tmp_path / "relationship.sqlite")
+    assert evidence
+    assert all(row["excerpt"] is None for row in evidence)
+    stored_text = "\n".join(
+        str(value or "")
+        for row in [*_relationship_event_rows(tmp_path / "relationship.sqlite"), *evidence]
+        for value in dict(row).values()
+    )
+    assert "予定変更への不満" not in stored_text
+    assert "予定の話が合わず" not in stored_text
+    assert "不安もあるが" not in stored_text
+
+
+def test_dry_run_write_private_level_allows_short_excerpts(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--privacy-level",
+            "private",
+            "--write",
+        ]
+    )
+
+    evidence = _evidence_rows(tmp_path / "relationship.sqlite")
+    excerpts = [row["excerpt"] for row in evidence if row["excerpt"]]
+    assert excerpts
+    assert all(len(excerpt) <= 120 for excerpt in excerpts)
+    assert all("/home/" not in excerpt for excerpt in excerpts)
 
 
 def test_dry_run_write_public_mode_omits_evidence_excerpts(tmp_path) -> None:

@@ -144,18 +144,31 @@ Dry-run analysis reads adapter evidence and writes a Markdown report only by
 default. It does not insert `relationship_events` candidates into the
 relationship DB unless `--write` is explicitly provided.
 
+Reports support three privacy levels:
+
+- `counts-only`: safest choice for real-data checks; emits counts, date range,
+  source counts, candidate counts, warnings, and evidence-strength buckets only.
+- `redacted`: default; emits anonymized candidate summaries with redacted source
+  pointers and no excerpts.
+- `private`: allows short excerpts for private local review, while still
+  redacting exact GPS, face data, photo paths, private paths, and unsafe
+  claims. `public` mode rejects this level.
+
 ```bash
 python -m relationship_lifelog_agent.cli analyze dry-run \
   --profile-id 1 \
   --date-from 2025-01-01 \
   --date-to 2025-03-31 \
   --backend mock \
+  --privacy-level counts-only \
   --output data/exports/dry_run_relationship_2025Q1.md
 ```
 
 Explicit write mode stores candidate summaries, source pointers, short excerpts,
-confidence, and evidence strength in the relationship DB. It does not store raw
-LINE full text, raw note full text, exact GPS, face data, or real photos.
+confidence, and evidence strength in the relationship DB. `counts-only` and
+`redacted` write modes omit evidence excerpts; `private` can store short
+bounded excerpts. No mode stores raw LINE full text, raw note full text, exact
+GPS, face data, or real photos.
 
 ```bash
 python -m relationship_lifelog_agent.cli analyze dry-run \
@@ -163,6 +176,7 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
   --date-from 2025-01-01 \
   --date-to 2025-03-31 \
   --backend mock \
+  --privacy-level private \
   --write
 ```
 
@@ -175,7 +189,8 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
 - Chat UI backend/profile/date-range selection with safe fallback when upstream
   adapters or profiles are not configured.
 - Minimal Chat UI review actions for saved relationship event candidates.
-- Dry-run relationship event candidate extraction with explicit `--write` candidate saves.
+- Dry-run relationship event candidate extraction with `counts-only`, `redacted`,
+  and `private` report levels plus explicit `--write` candidate saves.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.
 - Public-mode redaction for names, relationship labels, GPS, paths, and raw excerpts.
