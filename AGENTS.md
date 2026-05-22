@@ -160,3 +160,37 @@ When making changes in this repository:
 4. Push updates to `origin` at `git@github.com:zen-n162/relationship_lifelog_agent.git`.
 5. Do not claim GitHub was updated until `git push` succeeds.
 6. If GitHub push fails because of SSH/auth/network issues, report the exact blocker and leave the local commit intact.
+
+
+## Instruction maintenance log
+
+2026-05-23: The previously uncommitted AGENTS diff was reviewed and kept as formal guidance. It was classified as:
+
+- safety/privacy rule: raw upstream data, exact GPS, face data, private paths, and private excerpts must not leak into logs, reports, or public output.
+- upstream integration rule: upstream apps remain read-only dependencies and real integration is gated by `adapter.backend: upstream_readonly`.
+- testing/eval rule: mock behavior and upstream-not-configured behavior must both stay covered.
+- duplicate: the existing hard requirements already say not to destructively modify upstream apps, prefer read-only access, and use mock adapters first; the rules below keep those points as implementation-level detail.
+- obsolete: none found.
+- unknown: none found.
+
+## Upstream integration rules
+
+When integrating with `personal_lifelog_rag` or `notes_lifelog_rag`, treat this section as the implementation-level detail for the hard requirements above.
+
+1. Investigate upstream structure before implementing integration.
+2. Do not edit upstream applications unless explicitly instructed.
+3. Prefer read-only integration.
+4. If using SQLite, use read-only URI mode:
+   `sqlite3.connect("file:/path/to/db?mode=ro", uri=True)`
+5. Do not copy raw upstream private data into relationship DB.
+6. Store source pointers and short redacted excerpts, not full records.
+7. Keep mock adapter working after adding real adapters.
+8. Add tests for both mock and upstream-not-configured states.
+9. If upstream paths are missing, fail safely with a user-readable warning.
+10. Never print raw LINE messages, raw notes, exact GPS, face embeddings, face crops, or private file paths in logs.
+11. Real upstream integration must be gated by config:
+    `adapter.backend: upstream_readonly`.
+12. Default backend should remain `mock` until explicitly changed.
+13. Relationship profile mapping must be manual.
+14. Do not infer partner, lover, friend, family, or intimacy from upstream data.
+15. Dry-run analysis must not write relationship events unless `--write` is explicitly provided.
