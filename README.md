@@ -57,8 +57,9 @@ python -m relationship_lifelog_agent.cli profile list
 
 ## Dry-run Relationship Candidate Extraction
 
-Dry-run analysis reads adapter evidence and writes a Markdown report only. It
-does not insert `relationship_events` candidates into the relationship DB.
+Dry-run analysis reads adapter evidence and writes a Markdown report only by
+default. It does not insert `relationship_events` candidates into the
+relationship DB unless `--write` is explicitly provided.
 
 ```bash
 python -m relationship_lifelog_agent.cli analyze dry-run \
@@ -69,13 +70,26 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
   --output data/exports/dry_run_relationship_2025Q1.md
 ```
 
+Explicit write mode stores candidate summaries, source pointers, short excerpts,
+confidence, and evidence strength in the relationship DB. It does not store raw
+LINE full text, raw note full text, exact GPS, face data, or real photos.
+
+```bash
+python -m relationship_lifelog_agent.cli analyze dry-run \
+  --profile-id 1 \
+  --date-from 2025-01-01 \
+  --date-to 2025-03-31 \
+  --backend mock \
+  --write
+```
+
 ## MVP Features
 
 - Rule-based Japanese intent routing.
 - Mock personal and notes lifelog adapters.
 - Opt-in `upstream_readonly` adapters that return source pointers and short controlled excerpts.
 - Manual `relationship_profiles` management from the CLI and UI settings.
-- Dry-run relationship event candidate extraction with no event writes.
+- Dry-run relationship event candidate extraction with explicit `--write` candidate saves.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.
 - Public-mode redaction for names, relationship labels, GPS, paths, and raw excerpts.

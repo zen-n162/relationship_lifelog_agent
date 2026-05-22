@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from relationship_lifelog_agent.agent.memory import build_memory
-from relationship_lifelog_agent.analytics.dry_run import run_relationship_dry_run
+from relationship_lifelog_agent.analytics.dry_run import run_relationship_dry_run, write_dry_run_candidates
 from relationship_lifelog_agent.app import main as app_main
 from relationship_lifelog_agent.config import load_config
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
@@ -92,8 +92,26 @@ def _analyze_main(argv: list[str]) -> None:
         mode=args.mode,
         output_path=args.output,
     )
-    print(f"dry-run report written: {args.output}")
-    print(f"relationship_events written: 0")
+    if args.output:
+        print(f"dry-run report written: {args.output}")
+    else:
+        print("dry-run report written: none")
+    if args.write:
+        repo = RelationshipRepository(settings.paths.relationship_db)
+        write_result = write_dry_run_candidates(
+            repo=repo,
+            result=result,
+            profile_id=args.profile_id,
+            mode=args.mode,
+        )
+        print(f"relationship_events written: {write_result.events_written}")
+        print(f"relationship_event_evidence written: {write_result.evidence_written}")
+        print(f"post_conflict_activities written: {write_result.post_conflict_activities_written}")
+        print(f"duplicates skipped: {write_result.duplicates}")
+        for warning in write_result.warnings:
+            print(f"warning: {warning}")
+    else:
+        print("relationship_events written: 0")
     print(f"conflict candidates: {len(result.conflict_candidates)}")
     print(f"minor misunderstanding candidates: {len(result.minor_misunderstanding_candidates)}")
     print(f"reconciliation candidates: {len(result.reconciliation_candidates)}")
@@ -106,13 +124,14 @@ def _build_analyze_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="resource", required=True)
     analyze = subparsers.add_parser("analyze", help="Run relationship analyses.")
     analyze_sub = analyze.add_subparsers(dest="analyze_command", required=True)
-    dry_run = analyze_sub.add_parser("dry-run", help="Extract relationship event candidates without writing them.")
+    dry_run = analyze_sub.add_parser("dry-run", help="Extract relationship event candidates; write only with --write.")
     dry_run.add_argument("--profile-id", required=True, type=int)
     dry_run.add_argument("--date-from", required=True)
     dry_run.add_argument("--date-to", required=True)
     dry_run.add_argument("--backend", choices=("mock", "upstream_readonly"), default="mock")
     dry_run.add_argument("--mode", choices=("private", "public"), default="private")
-    dry_run.add_argument("--output", required=True)
+    dry_run.add_argument("--output", default=None)
+    dry_run.add_argument("--write", action="store_true", help="Explicitly save candidates into the relationship DB.")
     return parser
 
 

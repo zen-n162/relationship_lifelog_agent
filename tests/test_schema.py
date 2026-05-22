@@ -37,7 +37,8 @@ def test_repository_can_save_relationship_event(tmp_path) -> None:
     saved = repo.get_event(event_id)
     assert saved is not None
     assert saved["event_type"] == "conflict"
-    assert saved["review_status"] == "candidate"
+    assert saved["status"] == "candidate"
+    assert saved["review_status"] == "unreviewed"
     assert saved["confidence"] == event.confidence
     assert saved["evidence_strength"] == event.evidence_strength
 
@@ -65,15 +66,19 @@ def test_repository_can_save_evidence(tmp_path) -> None:
         source_date="2025-01-10",
         role="primary",
         summary="自分側の反省メモ候補",
+        source_pointer="note:mock-note",
         excerpt="短い private excerpt",
         confidence=0.52,
+        evidence_strength=0.57,
     )
 
     saved = repo.get_evidence(evidence_id)
     assert saved is not None
     assert saved["event_id"] == event_id
     assert saved["source_type"] == "note"
+    assert saved["source_pointer"] == "note:mock-note"
     assert saved["confidence"] == 0.52
+    assert saved["evidence_strength"] == 0.57
     assert repo.list_evidence(event_id=event_id)[0]["id"] == evidence_id
 
 

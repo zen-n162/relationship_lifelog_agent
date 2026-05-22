@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS relationship_events (
   event_type TEXT NOT NULL,
   event_date TEXT NOT NULL,
   summary TEXT NOT NULL,
-  review_status TEXT NOT NULL DEFAULT 'candidate',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  review_status TEXT NOT NULL DEFAULT 'unreviewed',
   confidence REAL NOT NULL DEFAULT 0.5,
   evidence_strength REAL NOT NULL DEFAULT 0.5,
   severity INTEGER NOT NULL DEFAULT 0,
@@ -48,7 +49,8 @@ CREATE TABLE IF NOT EXISTS relationship_events (
     'unresolved_issue',
     'other'
   )),
-  CHECK (review_status IN ('candidate', 'verified', 'corrected', 'rejected')),
+  CHECK (status IN ('candidate', 'hidden', 'archived')),
+  CHECK (review_status IN ('unreviewed', 'verified', 'corrected', 'rejected')),
   CHECK (confidence >= 0.0 AND confidence <= 1.0),
   CHECK (evidence_strength >= 0.0 AND evidence_strength <= 1.0),
   CHECK (severity >= 0 AND severity <= 4)
@@ -59,11 +61,13 @@ CREATE TABLE IF NOT EXISTS relationship_event_evidence (
   event_id INTEGER NOT NULL,
   source_type TEXT NOT NULL,
   source_id TEXT NOT NULL,
+  source_pointer TEXT,
   source_date TEXT,
   role TEXT NOT NULL DEFAULT 'supporting',
   summary TEXT NOT NULL,
   excerpt TEXT,
   confidence REAL NOT NULL DEFAULT 0.5,
+  evidence_strength REAL NOT NULL DEFAULT 0.5,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (event_id) REFERENCES relationship_events(id) ON DELETE CASCADE,
@@ -83,7 +87,8 @@ CREATE TABLE IF NOT EXISTS relationship_event_evidence (
     'manual'
   )),
   CHECK (role IN ('primary', 'supporting', 'contradictory', 'context', 'before_event', 'after_event')),
-  CHECK (confidence >= 0.0 AND confidence <= 1.0)
+  CHECK (confidence >= 0.0 AND confidence <= 1.0),
+  CHECK (evidence_strength >= 0.0 AND evidence_strength <= 1.0)
 );
 
 CREATE TABLE IF NOT EXISTS interaction_metrics (

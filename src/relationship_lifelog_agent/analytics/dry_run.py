@@ -20,9 +20,15 @@ from relationship_lifelog_agent.analytics.monthly_review import build_monthly_re
 from relationship_lifelog_agent.analytics.outing import build_post_conflict_outings
 from relationship_lifelog_agent.analytics.reconciliation import build_reconciliation_candidates
 from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
+from relationship_lifelog_agent.privacy.redaction import redact_public_text
 from relationship_lifelog_agent.privacy.redaction import redact_evidence_for_mode
 from relationship_lifelog_agent.profiles import ProfileContext
+
+
+MAX_STORED_SUMMARY_CHARS = 240
+MAX_STORED_EXCERPT_CHARS = 120
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,15 @@ class DryRunResult:
     reconciliation_candidates: list[RelationshipEvent]
     post_conflict_outings: list[PostConflictActivity]
     emotional_notes: list[NoteEvidence]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    events_written: int
+    evidence_written: int
+    post_conflict_activities_written: int
+    duplicates: int
     warnings: list[str]
 
 
@@ -110,6 +125,100 @@ def run_relationship_dry_run(
         reconciliation_candidates=reconciliations,
         post_conflict_outings=outings,
         emotional_notes=emotional_notes,
+        warnings=warnings,
+    )
+
+
+def write_dry_run_candidates(
+    *,
+    repo: RelationshipRepository,
+    result: DryRunResult,
+    profile_id: int,
+    mode: str = "private",
+) -> WriteResult:
+    """Persist dry-run candidates only when explicitly requested by the user."""
+
+    events_written = 0
+    evidence_written = 0
+    activities_written = 0
+    duplicate_count = 0
+    warnings: list[str] = []
+    event_id_map: dict[str, int] = {}
+    events = [
+        *result.conflict_candidates,
+        *result.minor_misunderstanding_candidates,
+        *result.reconciliation_candidates,
+        *[_emotional_note_event(note) for note in result.emotional_notes],
+    ]
+
+    for event in events:
+        source_pointer = _event_source_pointer(event)
+        existing_id = _find_duplicate_event(
+            repo,
+            profile_id=profile_id,
+            event_type=event.event_type,
+            event_date=event.date,
+            source_pointer=source_pointer,
+        )
+        if existing_id is not None:
+            event_id_map[event.event_id] = existing_id
+            duplicate_count += 1
+            warnings.append(f"duplicate skipped: {event.event_type} {event.date} {source_pointer}")
+            continue
+        event_id = repo.create_event(
+            profile_id=profile_id,
+            event_type=event.event_type,
+            event_date=event.date,
+            summary=_storage_text(event.summary, mode=mode, max_chars=MAX_STORED_SUMMARY_CHARS),
+            status="candidate",
+            review_status="unreviewed",
+            confidence=event.confidence,
+            evidence_strength=event.evidence_strength,
+            severity=event.severity,
+            generated_by_model=None,
+            prompt_version="dry_run_v1",
+        )
+        event_id_map[event.event_id] = event_id
+        events_written += 1
+        for item in event.evidence:
+            safe = _storage_evidence(item, mode=mode)
+            repo.create_evidence(
+                event_id=event_id,
+                source_type=safe.source_type,
+                source_id=safe.source_id,
+                source_pointer=safe.source_pointer,
+                source_date=safe.date,
+                role=safe.role,
+                summary=safe.summary,
+                excerpt=safe.excerpt,
+                confidence=safe.confidence,
+                evidence_strength=safe.evidence_strength,
+            )
+            evidence_written += 1
+
+    for activity in result.post_conflict_outings:
+        conflict_event_id = event_id_map.get(activity.conflict_event_id)
+        if _post_conflict_activity_exists(repo, conflict_event_id=conflict_event_id, activity=activity):
+            duplicate_count += 1
+            warnings.append(f"duplicate skipped: post_conflict_activity {activity.date} {activity.place_label}")
+            continue
+        repo.create_post_conflict_activity(
+            conflict_event_id=conflict_event_id,
+            activity_event_id=None,
+            activity_date=activity.date,
+            days_after_conflict=activity.days_after_conflict,
+            place_label=_storage_text(activity.place_label, mode=mode, max_chars=80),
+            activity_type=activity.activity_type,
+            confidence=activity.confidence,
+            evidence_strength=activity.evidence_strength,
+        )
+        activities_written += 1
+
+    return WriteResult(
+        events_written=events_written,
+        evidence_written=evidence_written,
+        post_conflict_activities_written=activities_written,
+        duplicates=duplicate_count,
         warnings=warnings,
     )
 
@@ -319,3 +428,113 @@ def _months_between(date_from: str, date_to: str) -> list[str]:
             month = 1
             year += 1
     return months
+
+
+def _emotional_note_event(note: NoteEvidence) -> RelationshipEvent:
+    return RelationshipEvent(
+        event_id=f"dry-run-emotional-note-{note.source_id}",
+        event_type="emotional_note",
+        date=note.date,
+        summary=f"感情メモ候補: {note.summary}",
+        review_status="candidate",
+        confidence=min(note.confidence, 0.62),
+        evidence_strength=min(note.evidence_strength, 0.6),
+        severity=0,
+        evidence=(note.as_evidence_item(),),
+        metadata={"dry_run": True, "source_pointer": note.source_pointer},
+    )
+
+
+def _event_source_pointer(event: RelationshipEvent) -> str:
+    pointer = event.metadata.get("source_pointer")
+    if pointer:
+        return _storage_text(str(pointer), mode="private", max_chars=180)
+    if event.evidence:
+        return _storage_text(str(event.evidence[0].source_pointer), mode="private", max_chars=180)
+    return _storage_text(event.event_id, mode="private", max_chars=180)
+
+
+def _find_duplicate_event(
+    repo: RelationshipRepository,
+    *,
+    profile_id: int,
+    event_type: str,
+    event_date: str,
+    source_pointer: str,
+) -> int | None:
+    with repo.connect() as conn:
+        row = conn.execute(
+            """
+            SELECT relationship_events.id
+            FROM relationship_events
+            JOIN relationship_event_evidence
+              ON relationship_event_evidence.event_id = relationship_events.id
+            WHERE relationship_events.profile_id = ?
+              AND relationship_events.event_type = ?
+              AND relationship_events.event_date = ?
+              AND relationship_event_evidence.source_pointer = ?
+            LIMIT 1
+            """,
+            (profile_id, event_type, event_date, source_pointer),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _post_conflict_activity_exists(
+    repo: RelationshipRepository,
+    *,
+    conflict_event_id: int | None,
+    activity: PostConflictActivity,
+) -> bool:
+    conflict_clause = "conflict_event_id = ?" if conflict_event_id is not None else "conflict_event_id IS NULL"
+    params: list[object] = []
+    if conflict_event_id is not None:
+        params.append(conflict_event_id)
+    params.extend([activity.date, activity.activity_type, activity.place_label])
+    with repo.connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT id
+            FROM post_conflict_activities
+            WHERE {conflict_clause}
+              AND activity_date = ?
+              AND activity_type = ?
+              AND COALESCE(place_label, '') = COALESCE(?, '')
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    return row is not None
+
+
+def _storage_evidence(item: EvidenceItem, *, mode: str) -> EvidenceItem:
+    safe = redact_evidence_for_mode(item, mode=mode)
+    excerpt = (
+        None
+        if mode == "public" or safe.excerpt is None
+        else _storage_text(safe.excerpt, mode=mode, max_chars=MAX_STORED_EXCERPT_CHARS)
+    )
+    return EvidenceItem(
+        source_type=safe.source_type,
+        source_id=_storage_text(safe.source_id, mode=mode, max_chars=120),
+        date=safe.date,
+        role=safe.role,
+        summary=_storage_text(safe.summary, mode=mode, max_chars=MAX_STORED_SUMMARY_CHARS),
+        excerpt=excerpt,
+        confidence=safe.confidence,
+        evidence_strength=safe.evidence_strength,
+        sensitivity=safe.sensitivity,
+        source_pointer=_storage_text(str(safe.source_pointer), mode=mode, max_chars=180),
+        metadata={},
+    )
+
+
+def _storage_text(text: str | None, *, mode: str, max_chars: int) -> str:
+    if text is None:
+        return ""
+    safe = sanitize_answer(text, mode=mode)
+    safe = redact_public_text(safe)
+    safe = " ".join(safe.split())
+    if len(safe) <= max_chars:
+        return safe
+    return safe[: max_chars - 1].rstrip() + "…"

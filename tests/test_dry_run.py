@@ -125,6 +125,149 @@ def test_dry_run_public_mode_redacts_private_profile_and_excerpts(tmp_path) -> N
     assert detect_answer_safety_violations(report, mode="public", person_names=["山田太郎"]) == []
 
 
+def test_dry_run_write_saves_unreviewed_candidate_events(tmp_path, capsys) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--write",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "relationship_events written: " in output
+    assert "relationship_events written: 0" not in output
+
+    events = _relationship_event_rows(tmp_path / "relationship.sqlite")
+    assert events
+    assert {row["status"] for row in events} == {"candidate"}
+    assert {row["review_status"] for row in events} == {"unreviewed"}
+    assert "conflict" in {row["event_type"] for row in events}
+    assert "emotional_note" in {row["event_type"] for row in events}
+
+    evidence = _evidence_rows(tmp_path / "relationship.sqlite")
+    assert evidence
+    assert all(row["source_pointer"] for row in evidence)
+    assert all(0.0 <= row["evidence_strength"] <= 1.0 for row in evidence)
+    activities = _post_conflict_activity_rows(tmp_path / "relationship.sqlite")
+    assert activities
+
+
+def test_dry_run_write_prevents_duplicate_events(tmp_path, capsys) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+    command = [
+        "--config",
+        str(config_path),
+        "analyze",
+        "dry-run",
+        "--profile-id",
+        str(profile_id),
+        "--date-from",
+        "2025-01-01",
+        "--date-to",
+        "2025-03-31",
+        "--backend",
+        "mock",
+        "--write",
+    ]
+
+    cli_main(command)
+    capsys.readouterr()
+    first_event_count = len(_relationship_event_rows(tmp_path / "relationship.sqlite"))
+    first_activity_count = len(_post_conflict_activity_rows(tmp_path / "relationship.sqlite"))
+
+    cli_main(command)
+    second_output = capsys.readouterr().out
+
+    assert len(_relationship_event_rows(tmp_path / "relationship.sqlite")) == first_event_count
+    assert len(_post_conflict_activity_rows(tmp_path / "relationship.sqlite")) == first_activity_count
+    assert "relationship_events written: 0" in second_output
+    assert "duplicates skipped: " in second_output
+
+
+def test_dry_run_write_does_not_store_raw_full_text_or_long_excerpts(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("Aさん", relationship_label="partner")
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--write",
+        ]
+    )
+
+    texts: list[str] = []
+    for row in [*_relationship_event_rows(tmp_path / "relationship.sqlite"), *_evidence_rows(tmp_path / "relationship.sqlite")]:
+        texts.extend(str(value or "") for value in dict(row).values())
+    joined = "\n".join(texts)
+    assert "LINE全文" not in joined
+    assert "メモ全文" not in joined
+    assert "/home/" not in joined
+    assert ".jpg" not in joined
+    assert all(len(str(row["excerpt"] or "")) <= 120 for row in _evidence_rows(tmp_path / "relationship.sqlite"))
+
+
+def test_dry_run_write_public_mode_omits_evidence_excerpts(tmp_path) -> None:
+    config_path = _write_config(tmp_path)
+    profile_id = RelationshipRepository(tmp_path / "relationship.sqlite").create_profile("山田太郎", relationship_label="partner")
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "analyze",
+            "dry-run",
+            "--profile-id",
+            str(profile_id),
+            "--date-from",
+            "2025-01-01",
+            "--date-to",
+            "2025-03-31",
+            "--backend",
+            "mock",
+            "--mode",
+            "public",
+            "--write",
+        ]
+    )
+
+    evidence = _evidence_rows(tmp_path / "relationship.sqlite")
+    assert evidence
+    assert all(row["excerpt"] is None for row in evidence)
+    stored_text = "\n".join(
+        str(value or "")
+        for row in [*_relationship_event_rows(tmp_path / "relationship.sqlite"), *evidence]
+        for value in dict(row).values()
+    )
+    assert "山田太郎" not in stored_text
+    assert "partner" not in stored_text
+
+
 def _write_config(tmp_path) -> str:
     config_path = tmp_path / "config.yaml"
     db_path = tmp_path / "relationship.sqlite"
@@ -140,3 +283,21 @@ def _assert_relationship_events_table_empty(db_path) -> None:
     with sqlite3.connect(db_path) as conn:
         count = conn.execute("SELECT COUNT(*) FROM relationship_events").fetchone()[0]
     assert count == 0
+
+
+def _relationship_event_rows(db_path) -> list[sqlite3.Row]:
+    return _rows(db_path, "SELECT * FROM relationship_events ORDER BY id")
+
+
+def _evidence_rows(db_path) -> list[sqlite3.Row]:
+    return _rows(db_path, "SELECT * FROM relationship_event_evidence ORDER BY id")
+
+
+def _post_conflict_activity_rows(db_path) -> list[sqlite3.Row]:
+    return _rows(db_path, "SELECT * FROM post_conflict_activities ORDER BY id")
+
+
+def _rows(db_path, sql: str) -> list[sqlite3.Row]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(sql).fetchall()

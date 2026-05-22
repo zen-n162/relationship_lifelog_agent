@@ -16,6 +16,8 @@ from relationship_lifelog_agent.db.migrate import initialize_database
 RowDict = dict[str, Any]
 ALLOWED_RELATIONSHIP_LABELS = frozenset({"partner", "ex_partner", "close_person", "other_private"})
 MANUAL_LABEL_SOURCE = "user_manual"
+ALLOWED_EVENT_STATUSES = frozenset({"candidate", "hidden", "archived"})
+ALLOWED_REVIEW_STATUSES = frozenset({"unreviewed", "verified", "corrected", "rejected"})
 
 
 class RelationshipRepository:
@@ -105,7 +107,8 @@ class RelationshipRepository:
         event_date: str,
         summary: str,
         profile_id: int | None = None,
-        review_status: str = "candidate",
+        status: str = "candidate",
+        review_status: str = "unreviewed",
         confidence: float = 0.5,
         evidence_strength: float = 0.5,
         severity: int = 0,
@@ -117,7 +120,8 @@ class RelationshipRepository:
             "event_type": event_type,
             "event_date": event_date,
             "summary": summary,
-            "review_status": review_status,
+            "status": _normalize_event_status(status),
+            "review_status": _normalize_review_status(review_status),
             "confidence": confidence,
             "evidence_strength": evidence_strength,
             "severity": severity,
@@ -133,7 +137,8 @@ class RelationshipRepository:
             "event_type": event.event_type,
             "event_date": event.date,
             "summary": event.summary,
-            "review_status": event.review_status,
+            "status": _normalize_event_status(event.metadata.get("status", "candidate")),
+            "review_status": _normalize_review_status(event.review_status),
             "confidence": event.confidence,
             "evidence_strength": event.evidence_strength,
             "severity": event.severity,
@@ -152,6 +157,7 @@ class RelationshipRepository:
         *,
         profile_id: int | None = None,
         event_type: str | None = None,
+        status: str | None = None,
         review_status: str | None = None,
         limit: int = 100,
     ) -> list[RowDict]:
@@ -163,6 +169,9 @@ class RelationshipRepository:
         if event_type:
             clauses.append("event_type = ?")
             params.append(event_type)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
         if review_status:
             clauses.append("review_status = ?")
             params.append(review_status)
@@ -174,6 +183,7 @@ class RelationshipRepository:
             "event_type",
             "event_date",
             "summary",
+            "status",
             "review_status",
             "confidence",
             "evidence_strength",
@@ -181,6 +191,10 @@ class RelationshipRepository:
             "generated_by_model",
             "prompt_version",
         }
+        if "status" in fields:
+            fields = {**fields, "status": _normalize_event_status(fields["status"])}
+        if "review_status" in fields:
+            fields = {**fields, "review_status": _normalize_review_status(fields["review_status"])}
         return self._update("relationship_events", event_id, allowed, fields)
 
     def delete_event(self, event_id: int) -> int:
@@ -195,20 +209,24 @@ class RelationshipRepository:
         source_type: str,
         source_id: str,
         summary: str,
+        source_pointer: str | None = None,
         source_date: str | None = None,
         role: str = "supporting",
         excerpt: str | None = None,
         confidence: float = 0.5,
+        evidence_strength: float = 0.5,
     ) -> int:
         values = {
             "event_id": event_id,
             "source_type": source_type,
             "source_id": source_id,
+            "source_pointer": source_pointer or f"{source_type}:{source_id}",
             "source_date": source_date,
             "role": role,
             "summary": summary,
             "excerpt": excerpt,
             "confidence": confidence,
+            "evidence_strength": evidence_strength,
         }
         with self.connect() as conn:
             return self._insert(conn, "relationship_event_evidence", values)
@@ -223,11 +241,13 @@ class RelationshipRepository:
             "event_id": event_id,
             "source_type": evidence.source_type,
             "source_id": evidence.source_id,
+            "source_pointer": evidence.source_pointer or f"{evidence.source_type}:{evidence.source_id}",
             "source_date": evidence.date,
             "role": evidence.role,
             "summary": evidence.summary,
             "excerpt": evidence.excerpt,
             "confidence": evidence.confidence,
+            "evidence_strength": evidence.evidence_strength,
         }
         if conn is not None:
             return self._insert(conn, "relationship_event_evidence", values)
@@ -251,11 +271,13 @@ class RelationshipRepository:
             "event_id",
             "source_type",
             "source_id",
+            "source_pointer",
             "source_date",
             "role",
             "summary",
             "excerpt",
             "confidence",
+            "evidence_strength",
         }
         return self._update("relationship_event_evidence", evidence_id, allowed, fields)
 
@@ -489,3 +511,19 @@ def _validate_relationship_label(value: object) -> None:
 def _validate_label_source(value: object) -> None:
     if value != MANUAL_LABEL_SOURCE:
         raise ValueError("label_source must be user_manual")
+
+
+def _normalize_event_status(value: object) -> str:
+    if value not in ALLOWED_EVENT_STATUSES:
+        allowed = ", ".join(sorted(ALLOWED_EVENT_STATUSES))
+        raise ValueError(f"status must be one of: {allowed}")
+    return str(value)
+
+
+def _normalize_review_status(value: object) -> str:
+    if value == "candidate":
+        return "unreviewed"
+    if value not in ALLOWED_REVIEW_STATUSES:
+        allowed = ", ".join(sorted(ALLOWED_REVIEW_STATUSES))
+        raise ValueError(f"review_status must be one of: {allowed}")
+    return str(value)
