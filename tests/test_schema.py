@@ -29,7 +29,7 @@ def test_schema_can_be_initialized(tmp_path) -> None:
 
 def test_repository_can_save_relationship_event(tmp_path) -> None:
     repo = RelationshipRepository(tmp_path / "relationship.sqlite")
-    profile_id = repo.create_profile("manual private profile", relationship_label="manual-only")
+    profile_id = repo.create_profile("manual private profile", relationship_label="partner")
     event = MockRelationshipMemory().search_events(event_type="conflict")[0]
     event_id = repo.save_event(event, profile_id=profile_id)
 

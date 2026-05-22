@@ -287,6 +287,7 @@
         <span class="badge">Mock adapters first</span>
         <span class="badge">SQLite</span>
         <span class="badge">Gradio UI</span>
+        <span class="badge">Manual profiles</span>
         <span class="badge">No external APIs</span>
         <span class="badge">share=False</span>
       </div>
@@ -308,6 +309,13 @@
             標準ではmock adapterを使い、必要に応じて<code>upstream_readonly</code>で
             LINE候補、外出候補、メモ候補、月次振り返り候補をread-only取得します。
             上流アプリのDBは更新しません。
+          </p>
+        </article>
+        <article class="card">
+          <h3>対象profileを手動設定</h3>
+          <p>
+            relationship label、person source ID、LINE speaker source IDはユーザーが
+            CLIまたはUI設定で手動選択します。AIは恋人ラベルやID対応を推定しません。
           </p>
         </article>
         <article class="card">
@@ -333,6 +341,7 @@
       <div class="callout warning">
         回答は「喧嘩候補」「外出候補」「反省/不安候補」のように候補として表現します。
         相手の気持ち、関係ラベル、親密さ、診断的な結論は断定しません。
+        profile未設定時は、具体的な関係対象を前提にせず、手動設定の案内を返します。
       </div>
     </section>
 
@@ -407,7 +416,7 @@
             <tr>
               <td><code>db/</code></td>
               <td>relationship DBのschemaとrepository層を提供します。</td>
-              <td>SQLite schema、migration、基本CRUDを実装済みです。</td>
+              <td>SQLite schema、migration、基本CRUD、手動profile管理を実装済みです。</td>
             </tr>
             <tr>
               <td><code>privacy/</code></td>
@@ -417,7 +426,7 @@
             <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
-              <td>チャット履歴、入力欄、送信ボタン、折りたたみ設定を実装済みです。</td>
+              <td>チャット履歴、入力欄、送信ボタン、profile選択を含む折りたたみ設定を実装済みです。</td>
             </tr>
           </tbody>
         </table>
@@ -429,6 +438,7 @@
       <ul>
         <li>既存の<code>personal_lifelog_rag</code>と<code>notes_lifelog_rag</code>は上流ツールとして扱い、破壊的に編集しません。</li>
         <li>relationship DBには、関係固有の派生情報とsource pointerを保存し、上流のraw private dataを丸ごとコピーしません。</li>
+        <li><code>relationship_profiles</code>は手動設定のみを保存し、<code>label_source</code>は<code>user_manual</code>固定です。</li>
         <li>外部API、cloud upload、モデル自動ダウンロードは使いません。</li>
         <li>Gradioは<code>127.0.0.1</code>で起動し、<code>share=True</code>は禁止です。</li>
         <li>public modeでは実人物名、恋人ラベル、LINE全文、メモ全文、正確GPS、顔crop、実写真、private pathを出しません。</li>
@@ -457,6 +467,12 @@
       <pre><code>conda activate relationship_lifelog_agent
 python -m relationship_lifelog_agent.app</code></pre>
       <p>標準のURLは<code>http://127.0.0.1:7862</code>です。</p>
+      <p>profileはCLIから手動作成できます。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli profile create \
+  --profile-name "Aさん" \
+  --person-source-id "plr:person:4" \
+  --line-speaker-source-id "plr:line_speaker:2" \
+  --relationship-label "partner"</code></pre>
       <pre><code>pytest</code></pre>
     </section>
 

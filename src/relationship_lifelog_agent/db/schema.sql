@@ -6,14 +6,15 @@ CREATE TABLE IF NOT EXISTS relationship_profiles (
   person_source_id TEXT,
   line_speaker_source_id TEXT,
   relationship_label TEXT,
-  label_source TEXT NOT NULL DEFAULT 'manual',
+  label_source TEXT NOT NULL DEFAULT 'user_manual',
   valid_from TEXT,
   valid_to TEXT,
   visibility TEXT NOT NULL DEFAULT 'private',
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CHECK (label_source = 'manual'),
+  CHECK (relationship_label IS NULL OR relationship_label IN ('partner', 'ex_partner', 'close_person', 'other_private')),
+  CHECK (label_source = 'user_manual'),
   CHECK (visibility IN ('private', 'hidden'))
 );
 

@@ -20,9 +20,16 @@ from relationship_lifelog_agent.agent.planner import AdapterCall, QueryPlan, bui
 from relationship_lifelog_agent.agent.router import route_question
 from relationship_lifelog_agent.analytics.evidence_scoring import AnalysisResult, mean
 from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.profiles import (
+    ProfileContext,
+    is_relationship_profile_question,
+    load_profile_context,
+    profile_missing_guidance,
+)
 
 
 CONFLICT_TYPES = {"conflict", "minor_misunderstanding"}
+_PROFILE_ARG_UNSET = object()
 
 
 def answer_question(
@@ -30,16 +37,25 @@ def answer_question(
     mode: str = "private",
     memory: object | None = None,
     settings: Settings | None = None,
+    profile_id: int | None | object = _PROFILE_ARG_UNSET,
 ) -> str:
-    memory = memory or build_memory(settings)
     route = route_question(question)
+    profile = _resolve_profile(settings, profile_id)
+    if settings is not None and profile is None and is_relationship_profile_question(question):
+        return compose_answer(_profile_missing_result(route.intents[0]), mode=mode)
+    memory = memory or build_memory(settings)
     plan = build_plan(route)
-    result = execute_plan(plan, memory, mode=mode)
+    result = execute_plan(plan, memory, mode=mode, profile=profile)
     return compose_answer(result, mode=mode)
 
 
-def execute_plan(plan: QueryPlan, memory: object, mode: str = "private") -> AnalysisResult:
-    results = _run_adapter_calls(plan, memory, mode=mode)
+def execute_plan(
+    plan: QueryPlan,
+    memory: object,
+    mode: str = "private",
+    profile: ProfileContext | None = None,
+) -> AnalysisResult:
+    results = _run_adapter_calls(plan, memory, mode=mode, profile=profile)
     results["_backend"] = [_backend(memory)]
     intent = plan.primary_intent
     if intent == "conflict_frequency":
@@ -54,13 +70,19 @@ def execute_plan(plan: QueryPlan, memory: object, mode: str = "private") -> Anal
         result = _monthly_relationship_review(results, month=plan.month or "2025-01")
     else:
         result = _general_relationship_qa(results)
+    result = _with_profile_context(result, profile)
     return _with_adapter_warnings(result, _memory_warnings(memory), _backend(memory))
 
 
-def _run_adapter_calls(plan: QueryPlan, memory: object, mode: str) -> dict[str, list[Any]]:
+def _run_adapter_calls(
+    plan: QueryPlan,
+    memory: object,
+    mode: str,
+    profile: ProfileContext | None,
+) -> dict[str, list[Any]]:
     results: dict[str, list[Any]] = defaultdict(list)
     for call in plan.calls:
-        value = _execute_adapter_call(call, memory, mode=mode)
+        value = _execute_adapter_call(call, memory, mode=mode, profile=profile)
         key = f"{call.adapter}.{call.method}"
         if isinstance(value, list):
             results[key].extend(value)
@@ -69,11 +91,17 @@ def _run_adapter_calls(plan: QueryPlan, memory: object, mode: str) -> dict[str, 
     return dict(results)
 
 
-def _execute_adapter_call(call: AdapterCall, memory: object, mode: str) -> Any:
+def _execute_adapter_call(
+    call: AdapterCall,
+    memory: object,
+    mode: str,
+    profile: ProfileContext | None,
+) -> Any:
     adapter = getattr(memory, call.adapter)
     method = getattr(adapter, call.method)
     kwargs = dict(call.kwargs)
     kwargs["mode"] = mode
+    _apply_profile_filters(call, kwargs, profile)
     if call.query is None:
         return method(**kwargs)
     return method(call.query, **kwargs)
@@ -261,6 +289,63 @@ def _general_relationship_qa(results: dict[str, list[Any]] | None = None) -> Ana
         evidence_strength=0.0,
         cautions=[_backend_caution(backend)],
     )
+
+
+def _profile_missing_result(intent: str) -> AnalysisResult:
+    return AnalysisResult(
+        intent=intent,
+        summary=profile_missing_guidance(),
+        aggregate={
+            "profile_configured": False,
+            "required_setup": "manual relationship profile",
+            "label_source": "user_manual only",
+        },
+        examples=[
+            "CLIで profile create を使い、person_source_id と line_speaker_source_id を手動で設定してください。",
+            "relationship_label はCLIで許可されたprivate labelから手動で選びます。",
+        ],
+        confidence=1.0,
+        evidence_strength=0.0,
+        cautions=[
+            "AIは恋人ラベルを推定しません。",
+            "AIはpersonとLINE speakerを自動リンクしません。",
+            "public modeではrelationship_labelを表示しません。",
+        ],
+    )
+
+
+def _resolve_profile(settings: Settings | None, profile_id: int | None | object) -> ProfileContext | None:
+    if settings is None:
+        return None
+    if profile_id is _PROFILE_ARG_UNSET:
+        profile_id = settings.relationship.default_profile_id
+    if profile_id is None:
+        return None
+    return load_profile_context(settings, int(profile_id))
+
+
+def _apply_profile_filters(call: AdapterCall, kwargs: dict[str, Any], profile: ProfileContext | None) -> None:
+    if profile is None:
+        return
+    if call.method == "search_line" and profile.line_speaker_source_id:
+        kwargs.setdefault("speaker_id", profile.line_speaker_source_id)
+    if call.method in {"search_media", "search_events"} and profile.person_source_id:
+        kwargs.setdefault("person_id", profile.person_source_id)
+
+
+def _with_profile_context(result: AnalysisResult, profile: ProfileContext | None) -> AnalysisResult:
+    if profile is None:
+        return result
+    aggregate = {
+        **result.aggregate,
+        "profile_configured": True,
+        "profile_id": profile.id,
+    }
+    cautions = [
+        *result.cautions,
+        "選択profileはユーザー手動設定のみを使います。関係ラベルやID対応はAIで推定しません。",
+    ]
+    return replace(result, aggregate=aggregate, cautions=cautions)
 
 
 def _relationship_event_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:

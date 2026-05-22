@@ -21,7 +21,8 @@ from relationship_lifelog_agent.adapters.types import (
     ThoughtEvidence,
 )
 from relationship_lifelog_agent.agent.executor import answer_question
-from relationship_lifelog_agent.config import AdapterSettings, Settings, load_config
+from relationship_lifelog_agent.config import AdapterSettings, PathSettings, RelationshipSettings, Settings, load_config
+from relationship_lifelog_agent.db.repository import RelationshipRepository
 
 
 def test_mock_personal_adapter_returns_conflict_and_reconciliation_line_evidence() -> None:
@@ -147,8 +148,14 @@ def test_config_example_defines_readonly_adapter_backend() -> None:
     assert settings.paths.notes_lifelog_db is None
 
 
-def test_upstream_readonly_backend_without_paths_fails_safely() -> None:
-    settings = Settings(adapter=AdapterSettings(backend="upstream_readonly"))
+def test_upstream_readonly_backend_without_paths_fails_safely(tmp_path) -> None:
+    db_path = tmp_path / "relationship.sqlite"
+    RelationshipRepository(db_path).create_profile("manual", relationship_label="partner")
+    settings = Settings(
+        adapter=AdapterSettings(backend="upstream_readonly"),
+        paths=PathSettings(relationship_db=str(db_path)),
+        relationship=RelationshipSettings(default_profile_id=1),
+    )
 
     answer = answer_question("喧嘩はどのくらいしている？", settings=settings)
 

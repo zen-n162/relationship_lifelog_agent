@@ -14,6 +14,8 @@ from relationship_lifelog_agent.db.migrate import initialize_database
 
 
 RowDict = dict[str, Any]
+ALLOWED_RELATIONSHIP_LABELS = frozenset({"partner", "ex_partner", "close_person", "other_private"})
+MANUAL_LABEL_SOURCE = "user_manual"
 
 
 class RelationshipRepository:
@@ -37,12 +39,15 @@ class RelationshipRepository:
         *,
         person_source_id: str | None = None,
         line_speaker_source_id: str | None = None,
-        label_source: str = "manual",
+        label_source: str = MANUAL_LABEL_SOURCE,
         valid_from: str | None = None,
         valid_to: str | None = None,
         visibility: str = "private",
         notes: str | None = None,
     ) -> int:
+        _validate_profile_name(profile_name)
+        _validate_relationship_label(relationship_label)
+        _validate_label_source(label_source)
         values = {
             "profile_name": profile_name,
             "person_source_id": person_source_id,
@@ -80,6 +85,12 @@ class RelationshipRepository:
             "visibility",
             "notes",
         }
+        if "profile_name" in fields:
+            _validate_profile_name(fields["profile_name"])
+        if "relationship_label" in fields:
+            _validate_relationship_label(fields["relationship_label"])
+        if "label_source" in fields:
+            _validate_label_source(fields["label_source"])
         return self._update("relationship_profiles", profile_id, allowed, fields)
 
     def delete_profile(self, profile_id: int) -> int:
@@ -460,3 +471,21 @@ def _int_or_none(value: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _validate_profile_name(value: object) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("profile_name is required")
+
+
+def _validate_relationship_label(value: object) -> None:
+    if value is None:
+        return
+    if value not in ALLOWED_RELATIONSHIP_LABELS:
+        allowed = ", ".join(sorted(ALLOWED_RELATIONSHIP_LABELS))
+        raise ValueError(f"relationship_label must be one of: {allowed}")
+
+
+def _validate_label_source(value: object) -> None:
+    if value != MANUAL_LABEL_SOURCE:
+        raise ValueError("label_source must be user_manual")
