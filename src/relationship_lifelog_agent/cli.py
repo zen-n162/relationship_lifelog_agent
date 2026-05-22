@@ -12,12 +12,21 @@ from relationship_lifelog_agent.config import load_config
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.doctor import render_doctor_json, render_doctor_text, run_doctor
 from relationship_lifelog_agent.profiles import load_profile_context
+from relationship_lifelog_agent.upstream_inspect import (
+    render_inspection_json,
+    render_inspection_markdown,
+    run_upstream_inspection,
+    write_inspection_report,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if _is_doctor_command(args):
         _doctor_main(args)
+        return
+    if _is_upstream_command(args):
+        _upstream_main(args)
         return
     if _is_profile_command(args):
         _profile_main(args)
@@ -30,6 +39,10 @@ def main(argv: list[str] | None = None) -> None:
 
 def _is_doctor_command(args: list[str]) -> bool:
     return "doctor" in args
+
+
+def _is_upstream_command(args: list[str]) -> bool:
+    return "upstream" in args
 
 
 def _is_profile_command(args: list[str]) -> bool:
@@ -48,6 +61,22 @@ def _doctor_main(argv: list[str]) -> None:
         print(render_doctor_json(report))
     else:
         print(render_doctor_text(report))
+    if report.has_errors:
+        raise SystemExit(1)
+
+
+def _upstream_main(argv: list[str]) -> None:
+    parser = _build_upstream_parser()
+    args = parser.parse_args(argv)
+    report = run_upstream_inspection(config_path=args.config, backend=args.backend)
+    if args.output:
+        write_inspection_report(report, args.output, output_format=args.format)
+        print("upstream schema inspection written: [redacted_path]")
+    else:
+        if args.format == "json":
+            print(render_inspection_json(report))
+        else:
+            print(render_inspection_markdown(report))
     if report.has_errors:
         raise SystemExit(1)
 
@@ -162,6 +191,19 @@ def _build_doctor_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="Diagnose local config, DBs, adapters, and privacy settings.")
     doctor.add_argument("--backend", choices=("mock", "upstream_readonly"), default=None)
     doctor.add_argument("--format", choices=("text", "json"), default="text")
+    return parser
+
+
+def _build_upstream_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Relationship Lifelog Agent upstream diagnostics CLI.")
+    parser.add_argument("--config", default=None, help="Optional private config path.")
+    subparsers = parser.add_subparsers(dest="resource", required=True)
+    upstream = subparsers.add_parser("upstream", help="Inspect read-only upstream adapter compatibility.")
+    upstream_sub = upstream.add_subparsers(dest="upstream_command", required=True)
+    inspect = upstream_sub.add_parser("inspect", help="Inspect upstream SQLite schema mapping without raw data output.")
+    inspect.add_argument("--backend", choices=("mock", "upstream_readonly"), default="upstream_readonly")
+    inspect.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    inspect.add_argument("--output", default=None)
     return parser
 
 

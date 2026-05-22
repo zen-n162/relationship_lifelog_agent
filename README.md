@@ -68,6 +68,23 @@ paths or missing manual profiles. `ERROR` means unsafe or unusable settings, suc
 as `allow_gradio_share: true`, external API permission, model auto-download, or
 a failed read-only upstream DB connection. Keep `config.local.yaml` out of git.
 
+## Upstream Schema Inspection
+
+Use schema inspection to check whether the upstream SQLite tables and columns
+match the current adapter contract. It uses read-only SQLite connections and
+prints only table names, column names, row counts, mapping status, coverage, and
+warnings. It does not print raw LINE text, raw note text, exact GPS, face data,
+photo paths, or private paths.
+
+```bash
+python -m relationship_lifelog_agent.cli upstream inspect \
+  --backend upstream_readonly \
+  --format markdown \
+  --output data/exports/upstream_schema_inspection.md
+
+python -m relationship_lifelog_agent.cli upstream inspect --format json
+```
+
 ## Eval
 
 The eval runner checks mock/private/public answer quality and safety. It covers

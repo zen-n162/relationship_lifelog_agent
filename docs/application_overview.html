@@ -347,6 +347,13 @@
             adapter backend、privacy設定、eval実行可否をredacted出力で確認します。
           </p>
         </article>
+        <article class="card">
+          <h3>schema mappingを確認</h3>
+          <p>
+            上流SQLite schemaとadapter contractの対応を、table名、column名、
+            row count、mapping statusだけで診断します。実データ本文は出しません。
+          </p>
+        </article>
       </div>
     </section>
 
@@ -468,6 +475,11 @@
               <td><code>python -m relationship_lifelog_agent.cli doctor</code>でOK/WARN/ERRORを表示します。出力はcounts-onlyかつprivate pathをredactします。</td>
             </tr>
             <tr>
+              <td><code>upstream inspect</code></td>
+              <td>上流SQLite schemaとadapter method coverageを診断します。</td>
+              <td><code>python -m relationship_lifelog_agent.cli upstream inspect</code>でMarkdownまたはJSONを出力します。生LINE本文、生メモ本文、正確GPS、顔情報、写真パスは出力しません。</td>
+            </tr>
+            <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
               <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、最小review actionを含む折りたたみ設定を実装済みです。</td>
@@ -515,6 +527,11 @@ python -m relationship_lifelog_agent.app</code></pre>
       <pre><code>python -m relationship_lifelog_agent.cli doctor
 python -m relationship_lifelog_agent.cli doctor --backend upstream_readonly
 python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
+      <p>上流schemaとadapter mappingの対応はinspectで確認できます。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli upstream inspect \
+  --backend upstream_readonly \
+  --format markdown \
+  --output data/exports/upstream_schema_inspection.md</code></pre>
       <p>profileはCLIから手動作成できます。</p>
       <pre><code>python -m relationship_lifelog_agent.cli profile create \
   --profile-name "Aさん" \
