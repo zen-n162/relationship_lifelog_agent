@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date
+from dataclasses import replace
 from typing import Any
 
-from relationship_lifelog_agent.adapters.mock import MockRelationshipMemory
 from relationship_lifelog_agent.adapters.types import (
     AdapterEvidence,
     EventEvidence,
@@ -15,10 +15,11 @@ from relationship_lifelog_agent.adapters.types import (
     ThoughtEvidence,
 )
 from relationship_lifelog_agent.agent.answer_composer import compose_answer
-from relationship_lifelog_agent.agent.memory import build_mock_memory
+from relationship_lifelog_agent.agent.memory import build_memory
 from relationship_lifelog_agent.agent.planner import AdapterCall, QueryPlan, build_plan
 from relationship_lifelog_agent.agent.router import route_question
 from relationship_lifelog_agent.analytics.evidence_scoring import AnalysisResult, mean
+from relationship_lifelog_agent.config import Settings
 
 
 CONFLICT_TYPES = {"conflict", "minor_misunderstanding"}
@@ -27,35 +28,39 @@ CONFLICT_TYPES = {"conflict", "minor_misunderstanding"}
 def answer_question(
     question: str,
     mode: str = "private",
-    memory: MockRelationshipMemory | None = None,
+    memory: object | None = None,
+    settings: Settings | None = None,
 ) -> str:
-    memory = memory or build_mock_memory()
+    memory = memory or build_memory(settings)
     route = route_question(question)
     plan = build_plan(route)
-    result = execute_plan(plan, memory)
+    result = execute_plan(plan, memory, mode=mode)
     return compose_answer(result, mode=mode)
 
 
-def execute_plan(plan: QueryPlan, memory: MockRelationshipMemory) -> AnalysisResult:
-    results = _run_adapter_calls(plan, memory)
+def execute_plan(plan: QueryPlan, memory: object, mode: str = "private") -> AnalysisResult:
+    results = _run_adapter_calls(plan, memory, mode=mode)
+    results["_backend"] = [_backend(memory)]
     intent = plan.primary_intent
     if intent == "conflict_frequency":
-        return _conflict_frequency(results)
-    if intent == "conflict_timeline":
-        return _conflict_timeline(results)
-    if intent == "post_conflict_activity":
-        return _post_conflict_activity(results)
-    if intent == "emotional_note_lookup":
-        return _emotional_note_lookup(results)
-    if intent == "monthly_relationship_review":
-        return _monthly_relationship_review(results, month=plan.month or "2025-01")
-    return _general_relationship_qa()
+        result = _conflict_frequency(results)
+    elif intent == "conflict_timeline":
+        result = _conflict_timeline(results)
+    elif intent == "post_conflict_activity":
+        result = _post_conflict_activity(results)
+    elif intent == "emotional_note_lookup":
+        result = _emotional_note_lookup(results)
+    elif intent == "monthly_relationship_review":
+        result = _monthly_relationship_review(results, month=plan.month or "2025-01")
+    else:
+        result = _general_relationship_qa(results)
+    return _with_adapter_warnings(result, _memory_warnings(memory), _backend(memory))
 
 
-def _run_adapter_calls(plan: QueryPlan, memory: MockRelationshipMemory) -> dict[str, list[Any]]:
+def _run_adapter_calls(plan: QueryPlan, memory: object, mode: str) -> dict[str, list[Any]]:
     results: dict[str, list[Any]] = defaultdict(list)
     for call in plan.calls:
-        value = _execute_adapter_call(call, memory)
+        value = _execute_adapter_call(call, memory, mode=mode)
         key = f"{call.adapter}.{call.method}"
         if isinstance(value, list):
             results[key].extend(value)
@@ -64,12 +69,14 @@ def _run_adapter_calls(plan: QueryPlan, memory: MockRelationshipMemory) -> dict[
     return dict(results)
 
 
-def _execute_adapter_call(call: AdapterCall, memory: MockRelationshipMemory) -> Any:
+def _execute_adapter_call(call: AdapterCall, memory: object, mode: str) -> Any:
     adapter = getattr(memory, call.adapter)
     method = getattr(adapter, call.method)
+    kwargs = dict(call.kwargs)
+    kwargs["mode"] = mode
     if call.query is None:
-        return method(**call.kwargs)
-    return method(call.query, **call.kwargs)
+        return method(**kwargs)
+    return method(call.query, **kwargs)
 
 
 def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
@@ -81,18 +88,20 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
         for event in events[:4]
     ]
     if not events:
+        backend = _backend_from_results(results)
         return AnalysisResult(
             intent="conflict_frequency",
-            summary="mock データ上では喧嘩候補は見つかりませんでした。",
-            aggregate={"total_candidates": 0},
+            summary=_no_candidate_summary(backend, "喧嘩候補"),
+            aggregate={"total_candidates": 0, "adapter_backend": backend},
             confidence=0.3,
             evidence_strength=0.0,
-            cautions=["実データ統合前なので、mock adapter の範囲だけの結果です。"],
+            cautions=[_backend_caution(backend)],
         )
+    backend_label = "mock データ上" if _backend_from_results(results) == "mock" else "上流read-only adapter"
     return AnalysisResult(
         intent="conflict_frequency",
         summary=(
-            f"mock データ上では喧嘩候補が {len(events)} 件あります。"
+            f"{backend_label}では喧嘩候補が {len(events)} 件あります。"
             "これは確定ではなく、人間確認前の候補です。"
         ),
         aggregate={
@@ -139,11 +148,15 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
         [event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES],
         key=lambda item: item.date,
     )
+    if not conflicts:
+        conflicts = _line_conflict_candidates(results)
     outings = sorted(
         [event for event in events if isinstance(event, EventEvidence) and event.event_type == "date_or_outing"],
         key=lambda item: item.date,
     )
     media = [item for item in _adapter_items(results, "personal.search_media") if isinstance(item, MediaEvidence)]
+    if not outings:
+        outings = sorted(_media_outing_candidates(results), key=lambda item: item.date)
     examples: list[str] = []
     days_after_values: list[int] = []
     for outing in outings:
@@ -154,9 +167,12 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
         days_after_values.append(days_after)
         examples.append(f"{outing.date}: 喧嘩候補の {days_after} 日後に外出候補 - {outing.summary}")
     evidence = _evidence_items([*conflicts, *outings, *_adapter_items(results, "personal.search_line"), *media, *_adapter_items(results, "notes.search_notes")])
+    summary = "喧嘩候補の後に外出候補があります。ただし、それが仲直りだったとは断定しません。"
+    if not conflicts and not outings:
+        summary = _no_candidate_summary(_backend_from_results(results), "喧嘩後の外出候補")
     return AnalysisResult(
         intent="post_conflict_activity",
-        summary="喧嘩候補の後に外出候補があります。ただし、それが仲直りだったとは断定しません。",
+        summary=summary,
         aggregate={
             "post_conflict_window_days": 14,
             "conflict_candidates": len(conflicts),
@@ -235,27 +251,80 @@ def _monthly_relationship_review(results: dict[str, list[Any]], month: str) -> A
     )
 
 
-def _general_relationship_qa() -> AnalysisResult:
+def _general_relationship_qa(results: dict[str, list[Any]] | None = None) -> AnalysisResult:
+    backend = _backend_from_results(results or {})
     return AnalysisResult(
         intent="general_relationship_qa",
-        summary="この質問は MVP の汎用回答に回しました。mock データで答えられる範囲は、喧嘩候補、外出候補、自分側メモ、月次レビューです。",
-        aggregate={"supported_mvp_intents": 4},
+        summary="この質問は MVP の汎用回答に回しました。答えられる範囲は、喧嘩候補、外出候補、自分側メモ、月次レビューです。",
+        aggregate={"supported_mvp_intents": 4, "adapter_backend": backend},
         confidence=0.35,
         evidence_strength=0.0,
-        cautions=["実データ統合前なので、具体的な事実確認は mock データに限定されます。"],
+        cautions=[_backend_caution(backend)],
     )
 
 
 def _relationship_event_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:
     events = _adapter_items(results, "personal.search_events")
-    return sorted(
-        [
+    candidates = [
             event
             for event in events
             if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES
-        ],
-        key=lambda item: item.date,
-    )
+        ]
+    if not candidates:
+        candidates = _line_conflict_candidates(results)
+    return sorted(candidates, key=lambda item: item.date)
+
+
+def _line_conflict_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:
+    candidates: list[EventEvidence] = []
+    for item in _adapter_items(results, "personal.search_line"):
+        if not isinstance(item, AdapterEvidence):
+            continue
+        text = f"{item.summary} {item.excerpt or ''}"
+        if not _text_has_any(text, ("喧嘩", "けんか", "すれ違い", "謝罪", "不満", "予定変更")):
+            continue
+        event_type = "minor_misunderstanding" if _text_has_any(text, ("すれ違い", "返信")) else "conflict"
+        candidates.append(
+            EventEvidence(
+                source_id=f"line-candidate-{item.source_id}",
+                date=item.date,
+                role="primary",
+                summary=item.summary,
+                confidence=min(item.confidence, 0.62),
+                evidence_strength=min(item.evidence_strength, 0.55),
+                sensitivity=item.sensitivity,
+                source_pointer=item.source_pointer,
+                event_type=event_type,
+                review_status="candidate",
+                severity=1 if event_type == "minor_misunderstanding" else 2,
+                metadata={"derived_from": item.source_pointer, "adapter_backend": _backend_from_results(results)},
+            )
+        )
+    return candidates
+
+
+def _media_outing_candidates(results: dict[str, list[Any]]) -> list[EventEvidence]:
+    candidates: list[EventEvidence] = []
+    for item in _adapter_items(results, "personal.search_media"):
+        if not isinstance(item, MediaEvidence):
+            continue
+        candidates.append(
+            EventEvidence(
+                source_id=f"media-outing-{item.source_id}",
+                date=item.date,
+                role="after_event",
+                summary=item.summary,
+                confidence=min(item.confidence, 0.6),
+                evidence_strength=min(item.evidence_strength, 0.55),
+                sensitivity=item.sensitivity,
+                source_pointer=item.source_pointer,
+                event_type="date_or_outing",
+                review_status="candidate",
+                severity=0,
+                metadata={"derived_from": item.source_pointer, "adapter_backend": _backend_from_results(results)},
+            )
+        )
+    return candidates
 
 
 def _adapter_items(results: dict[str, list[Any]], key: str) -> list[Any]:
@@ -312,3 +381,54 @@ def _month_summary_text(results: dict[str, list[Any]]) -> str:
     if not summaries:
         return ""
     return f"月次サマリ候補: {summaries[0]}"
+
+
+def _backend(memory: object) -> str:
+    return str(getattr(memory, "backend", "mock"))
+
+
+def _backend_from_results(results: dict[str, list[Any]]) -> str:
+    values = results.get("_backend", [])
+    if values:
+        return str(values[0])
+    return "mock"
+
+
+def _memory_warnings(memory: object) -> list[str]:
+    warnings = getattr(memory, "warnings", None)
+    if callable(warnings):
+        return warnings()
+    collected: list[str] = []
+    for adapter_name in ("personal", "notes"):
+        adapter = getattr(memory, adapter_name, None)
+        adapter_warnings = getattr(adapter, "warnings", None)
+        if callable(adapter_warnings):
+            collected.extend(adapter_warnings())
+    return list(dict.fromkeys(collected))
+
+
+def _with_adapter_warnings(result: AnalysisResult, warnings: list[str], backend: str) -> AnalysisResult:
+    cautions = [*result.cautions]
+    for warning in warnings:
+        if warning not in cautions:
+            cautions.append(warning)
+    if backend == "upstream_readonly" and not warnings:
+        cautions.append("上流DBはread-only接続で参照し、relationship DBへのrawデータ大量コピーは行いません。")
+    return replace(result, cautions=cautions)
+
+
+def _no_candidate_summary(backend: str, target: str) -> str:
+    if backend == "upstream_readonly":
+        return f"上流read-only adapterでは、現在の設定と検索範囲で{target}は見つかりませんでした。"
+    return f"mock データ上では{target}は見つかりませんでした。"
+
+
+def _backend_caution(backend: str) -> str:
+    if backend == "upstream_readonly":
+        return "上流adapterが未設定または根拠不足の場合は、source pointer と短いexcerptのみを安全に扱います。"
+    return "実データ統合前なので、具体的な事実確認は mock データに限定されます。"
+
+
+def _text_has_any(value: object, needles: tuple[str, ...]) -> bool:
+    text = str(value or "")
+    return any(needle in text for needle in needles)

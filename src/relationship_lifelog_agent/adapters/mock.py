@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 from relationship_lifelog_agent.adapters.types import (
@@ -205,6 +206,7 @@ class MockPersonalLifelogAdapter:
         date_to: str | None = None,
         speaker_id: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[LineEvidence]:
         matches = [
             item
@@ -213,7 +215,7 @@ class MockPersonalLifelogAdapter:
             and (speaker_id is None or item.speaker_id == speaker_id)
             and _matches_query(item, query)
         ]
-        return matches[:limit]
+        return _adapter_results_for_mode(matches[:limit], mode)
 
     def search_media(
         self,
@@ -223,6 +225,7 @@ class MockPersonalLifelogAdapter:
         person_id: str | None = None,
         place_id: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[MediaEvidence]:
         del person_id
         matches = [
@@ -232,7 +235,7 @@ class MockPersonalLifelogAdapter:
             and (place_id is None or item.place_id == place_id)
             and _matches_query(item, query)
         ]
-        return matches[:limit]
+        return _adapter_results_for_mode(matches[:limit], mode)
 
     def search_events(
         self,
@@ -242,6 +245,7 @@ class MockPersonalLifelogAdapter:
         person_id: str | None = None,
         place_id: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[EventEvidence]:
         del person_id, place_id
         matches = [
@@ -250,7 +254,7 @@ class MockPersonalLifelogAdapter:
             if _in_range(item.date, date_from, date_to)
             and (event_type is None or item.event_type == event_type)
         ]
-        return matches[:limit]
+        return _adapter_results_for_mode(matches[:limit], mode)
 
     def search_places(
         self,
@@ -258,13 +262,14 @@ class MockPersonalLifelogAdapter:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[PlaceEvidence]:
         matches = [
             item
             for item in self._places
             if _in_range(item.date, date_from, date_to) and _matches_query(item, query)
         ]
-        return matches[:limit]
+        return _adapter_results_for_mode(matches[:limit], mode)
 
     def get_day_summary(self, day: str, mode: str = "private") -> dict[str, str]:
         del mode
@@ -349,13 +354,14 @@ class MockNotesLifelogAdapter:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[NoteEvidence]:
         matches = [
             item
             for item in self._notes
             if _in_range(item.date, date_from, date_to) and _matches_query(item, query)
         ]
-        return matches[:limit]
+        return _adapter_results_for_mode(matches[:limit], mode)
 
     def search_thoughts(
         self,
@@ -363,16 +369,17 @@ class MockNotesLifelogAdapter:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[ThoughtEvidence]:
         matches = [
             item
             for item in self._thoughts
             if _in_range(item.date, date_from, date_to) and _matches_query(item, query)
         ]
-        return matches[:limit]
+        return _adapter_results_for_mode(matches[:limit], mode)
 
-    def get_monthly_reflection(self, month: str) -> MonthlyReflection:
-        return self._monthly_reflections.get(
+    def get_monthly_reflection(self, month: str, mode: str = "private") -> MonthlyReflection:
+        reflection = self._monthly_reflections.get(
             month,
             MonthlyReflection(
                 source_id=f"mock-reflection-{month}",
@@ -385,6 +392,7 @@ class MockNotesLifelogAdapter:
                 metadata={"tags": ("月次", "低信頼")},
             ),
         )
+        return _adapter_result_for_mode(reflection, mode)
 
 
 class MockRelationshipMemory:
@@ -494,6 +502,7 @@ class MockRelationshipMemory:
         date_to: str | None = None,
         speaker_id: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[LineEvidence]:
         return self.personal.search_line(
             query=query,
@@ -501,6 +510,7 @@ class MockRelationshipMemory:
             date_to=date_to,
             speaker_id=speaker_id,
             limit=limit,
+            mode=mode,
         )
 
     def search_media(
@@ -511,6 +521,7 @@ class MockRelationshipMemory:
         person_id: str | None = None,
         place_id: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[MediaEvidence]:
         return self.personal.search_media(
             query=query,
@@ -519,6 +530,7 @@ class MockRelationshipMemory:
             person_id=person_id,
             place_id=place_id,
             limit=limit,
+            mode=mode,
         )
 
     def search_events(
@@ -529,8 +541,9 @@ class MockRelationshipMemory:
         person_id: str | None = None,
         place_id: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[RelationshipEvent]:
-        del person_id, place_id
+        del person_id, place_id, mode
         matches = [
             event
             for event in self._events
@@ -544,7 +557,9 @@ class MockRelationshipMemory:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[PostConflictActivity]:
+        del mode
         matches = [
             activity
             for activity in self._activities
@@ -564,8 +579,9 @@ class MockRelationshipMemory:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[NoteEvidence]:
-        return self.notes.search_notes(query=query, date_from=date_from, date_to=date_to, limit=limit)
+        return self.notes.search_notes(query=query, date_from=date_from, date_to=date_to, limit=limit, mode=mode)
 
     def search_thoughts(
         self,
@@ -573,11 +589,12 @@ class MockRelationshipMemory:
         date_from: str | None = None,
         date_to: str | None = None,
         limit: int = 50,
+        mode: str = "private",
     ) -> list[ThoughtEvidence]:
-        return self.notes.search_thoughts(query=query, date_from=date_from, date_to=date_to, limit=limit)
+        return self.notes.search_thoughts(query=query, date_from=date_from, date_to=date_to, limit=limit, mode=mode)
 
-    def get_monthly_reflection(self, month: str) -> MonthlyReflection:
-        return self.notes.get_monthly_reflection(month)
+    def get_monthly_reflection(self, month: str, mode: str = "private") -> MonthlyReflection:
+        return self.notes.get_monthly_reflection(month, mode=mode)
 
     def evidence_bundle_for_question(self, question: str) -> EvidenceBundle:
         if "後" in question or "どこ" in question or "行" in question:
@@ -618,6 +635,16 @@ def _matches_query(item: AdapterEvidence, query: str) -> bool:
         ]
     )
     return any(term in haystack for term in terms)
+
+
+def _adapter_result_for_mode(item: AdapterEvidence, mode: str):
+    if mode == "public" and item.sensitivity != "public":
+        return replace(item, excerpt=None)
+    return item
+
+
+def _adapter_results_for_mode(items, mode: str):
+    return [_adapter_result_for_mode(item, mode) for item in items]
 
 
 def _query_terms(query: str) -> list[str]:

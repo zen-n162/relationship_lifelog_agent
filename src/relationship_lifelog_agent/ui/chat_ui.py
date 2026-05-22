@@ -52,13 +52,13 @@ def build_chat_ui(settings: Settings) -> Any:
             if not history:
                 return history
             question = history[-1]["content"]
-            answer = answer_question(question, mode=selected_mode)
+            answer = answer_question(question, mode=selected_mode, settings=settings)
             if show_debug:
                 route = route_question(question)
                 answer += (
                     "\n\n<details>\n<summary>Debug</summary>\n\n"
                     f"- intents: {', '.join(route.intents)}\n"
-                    "- adapter: mock\n\n"
+                    f"- adapter: {settings.adapter.backend}\n\n"
                     "</details>"
                 )
             return [*history, {"role": "assistant", "content": answer}]

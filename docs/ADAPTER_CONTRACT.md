@@ -1,10 +1,11 @@
 # Adapter Contract
 
 This document defines the adapter contract for `relationship_lifelog_agent`.
-It must be satisfied by both the current mock adapters and any future
-read-only upstream adapters.
+It must be satisfied by both the mock adapters and the opt-in read-only
+upstream adapters.
 
-No real upstream data connection is implemented by this contract document.
+Real upstream access is available only through the `upstream_readonly` backend.
+The default backend remains `mock`.
 
 ## Principles
 
@@ -23,7 +24,8 @@ adapter:
   upstream_access_mode: readonly
 ```
 
-The `upstream_readonly` backend is reserved for a future opt-in implementation.
+The `upstream_readonly` backend is opt-in. It must use read-only SQLite
+connections and must fail safely when upstream DB paths are unset.
 
 ## Adapter Methods
 
@@ -191,7 +193,7 @@ All adapter evidence objects must expose:
 `source_pointer` must be stable enough to re-find the upstream record without
 copying that record into the relationship DB.
 
-Recommended future upstream formats:
+Recommended upstream formats:
 
 ```text
 personal_lifelog_rag:line_messages:<message_id>
@@ -249,7 +251,7 @@ bundle.to_evidence_items(mode="public")
 
 ## Read-only Rules
 
-Future upstream adapters must:
+Upstream adapters must:
 
 - Open upstream SQLite databases using URI `mode=ro`.
 - Detect table/column capabilities before querying.
@@ -260,7 +262,7 @@ Future upstream adapters must:
 - Store only relationship-specific derived data and source pointers in the
   relationship DB.
 
-The preferred future DB connection shape is:
+The required DB connection shape is:
 
 ```python
 sqlite3.connect("file:<upstream-db>?mode=ro", uri=True)
@@ -274,7 +276,7 @@ Mock data must:
 
 - Be synthetic and privacy-safe.
 - Include enough evidence to answer MVP questions.
-- Use the same fields as future read-only adapters.
+- Use the same fields as read-only upstream adapters.
 - Avoid real names, real messages, real notes, exact GPS, face data, and photo
   files.
 

@@ -305,8 +305,9 @@
         <article class="card">
           <h3>根拠を集める</h3>
           <p>
-            現時点ではmock adapterだけを使い、LINE候補、外出候補、メモ候補、
-            月次振り返り候補を安全に返します。上流アプリのDBは更新しません。
+            標準ではmock adapterを使い、必要に応じて<code>upstream_readonly</code>で
+            LINE候補、外出候補、メモ候補、月次振り返り候補をread-only取得します。
+            上流アプリのDBは更新しません。
           </p>
         </article>
         <article class="card">
@@ -321,7 +322,7 @@
 
     <section>
       <h2>MVPで答えられる質問</h2>
-      <p>現在のMVPは、mock dataを使って次のような質問に対応します。</p>
+      <p>現在のMVPは、mock dataまたはopt-inのread-only上流adapterで次のような質問に対応します。</p>
       <ul>
         <li>喧嘩はどのくらいしている？</li>
         <li>喧嘩はいつ多かった？</li>
@@ -356,7 +357,7 @@
           <span class="num">3</span>
           <div>
             <strong>Planner / Executor</strong>
-            <p>intentに応じて必要なadapter呼び出しを決め、mock adapterから根拠を集めます。</p>
+            <p>intentに応じて必要なadapter呼び出しを決め、設定されたbackendから根拠を集めます。</p>
           </div>
         </div>
         <div class="flow-step">
@@ -391,7 +392,7 @@
             <tr>
               <td><code>adapters/</code></td>
               <td>上流lifelogアプリへの読み取り境界を定義します。</td>
-              <td>mock adapterのみ実装。実DB接続は未実装で、将来の実接続は<code>upstream_readonly</code>としてopt-inにします。</td>
+              <td>mock adapterを標準にしつつ、<code>upstream_readonly</code>でSQLite read-only接続をopt-in利用できます。未設定時は安全なwarningと空結果を返します。</td>
             </tr>
             <tr>
               <td><code>agent/</code></td>
@@ -462,7 +463,7 @@ python -m relationship_lifelog_agent.app</code></pre>
     <section>
       <h2>今後の拡張方針</h2>
       <ul>
-        <li>実データ接続はadapter境界の内側に追加し、上流アプリはSQLite read-only接続を第一候補として扱います。</li>
+        <li>上流アプリ接続はadapter境界の内側に限定し、SQLiteは<code>mode=ro</code>のread-only接続で扱います。</li>
         <li>adapter evidenceは<code>source_pointer</code>、<code>source_type</code>、<code>sensitivity</code>、<code>confidence</code>、<code>evidence_strength</code>を持ちます。</li>
         <li>LLMを使う場合もlocal LLMをユーザー設定でのみ利用し、分類補助や要約補助に限定します。</li>
         <li>顔identity、LINE speaker identity、relationship labelはAIで自動推定しません。</li>

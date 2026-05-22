@@ -1,5 +1,9 @@
 from pathlib import Path
+import sqlite3
 
+from relationship_lifelog_agent.adapters.notes_lifelog import NotesSqliteReadOnlyAdapter
+from relationship_lifelog_agent.adapters.personal_lifelog import PersonalSqliteReadOnlyAdapter
+from relationship_lifelog_agent.adapters import upstream_sqlite
 from relationship_lifelog_agent.adapters.mock import (
     MockNotesLifelogAdapter,
     MockPersonalLifelogAdapter,
@@ -16,7 +20,8 @@ from relationship_lifelog_agent.adapters.types import (
     NoteEvidence,
     ThoughtEvidence,
 )
-from relationship_lifelog_agent.config import load_config
+from relationship_lifelog_agent.agent.executor import answer_question
+from relationship_lifelog_agent.config import AdapterSettings, Settings, load_config
 
 
 def test_mock_personal_adapter_returns_conflict_and_reconciliation_line_evidence() -> None:
@@ -140,6 +145,82 @@ def test_config_example_defines_readonly_adapter_backend() -> None:
     assert settings.adapter.copy_raw_upstream_data is False
     assert settings.paths.personal_lifelog_db is None
     assert settings.paths.notes_lifelog_db is None
+
+
+def test_upstream_readonly_backend_without_paths_fails_safely() -> None:
+    settings = Settings(adapter=AdapterSettings(backend="upstream_readonly"))
+
+    answer = answer_question("喧嘩はどのくらいしている？", settings=settings)
+
+    assert "上流adapter未設定" in answer
+    assert "personal_lifelog_db" in answer
+    assert "notes_lifelog_db" in answer
+
+
+def test_open_readonly_sqlite_uses_mode_ro(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "upstream.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE fixture (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    calls: list[tuple[str, dict[str, object]]] = []
+    real_connect = sqlite3.connect
+
+    def recording_connect(database, *args, **kwargs):
+        calls.append((str(database), dict(kwargs)))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(upstream_sqlite.sqlite3, "connect", recording_connect)
+    ro_conn = upstream_sqlite.open_readonly_sqlite(db_path)
+    ro_conn.close()
+
+    assert calls
+    assert "mode=ro" in calls[0][0]
+    assert calls[0][1]["uri"] is True
+
+
+def test_personal_upstream_search_line_reads_synthetic_db_readonly(tmp_path) -> None:
+    db_path = tmp_path / "personal.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE line_messages (id TEXT PRIMARY KEY, chat_id TEXT, sent_at TEXT, sender TEXT, text TEXT, message_type TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO line_messages VALUES (?, ?, ?, ?, ?, ?)",
+        ("line-1", "chat-1", "2025-01-10T10:00:00", "speaker-a", "synthetic 謝罪 and schedule mismatch", "text"),
+    )
+    conn.commit()
+    conn.close()
+    adapter = PersonalSqliteReadOnlyAdapter(db_path)
+
+    private_results = adapter.search_line("謝罪", mode="private")
+    public_results = adapter.search_line("謝罪", mode="public")
+
+    assert len(private_results) == 1
+    assert private_results[0].source_pointer == "personal_lifelog_rag:line_messages:line-1"
+    assert private_results[0].excerpt
+    assert public_results[0].excerpt is None
+
+
+def test_notes_upstream_search_notes_public_mode_omits_excerpt(tmp_path) -> None:
+    db_path = tmp_path / "notes.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, note_date TEXT, title TEXT, body TEXT)")
+    conn.execute(
+        "INSERT INTO notes VALUES (?, ?, ?, ?)",
+        ("note-1", "2025-01-11", "synthetic reflection", "synthetic 反省 note body"),
+    )
+    conn.commit()
+    conn.close()
+    adapter = NotesSqliteReadOnlyAdapter(db_path)
+
+    private_results = adapter.search_notes("反省", mode="private")
+    public_results = adapter.search_notes("反省", mode="public")
+
+    assert len(private_results) == 1
+    assert private_results[0].source_pointer == "notes_lifelog_rag:notes:note-1"
+    assert private_results[0].excerpt
+    assert public_results[0].excerpt is None
 
 
 def _assert_adapter_evidence_contract(item: AdapterEvidence) -> None:
