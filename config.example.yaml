@@ -7,10 +7,23 @@ app:
   allow_model_auto_download: false
   allow_gradio_share: false
 
+adapter:
+  backend: mock
+  upstream_access_mode: readonly
+  prefer: auto
+  allow_sqlite_readonly: true
+  allow_cli_subprocess: true
+  allow_python_import: true
+  copy_raw_upstream_data: false
+
 paths:
   personal_lifelog_rag: "~/MyApplication/personal_lifelog_rag"
   notes_lifelog_rag: "~/MyApplication/notes_lifelog_rag"
   relationship_db: "~/MyApplication/relationship_lifelog_agent/data/relationship.sqlite"
+  personal_lifelog_db: null
+  notes_lifelog_db: null
+  personal_lifelog_export_dir: null
+  notes_lifelog_export_dir: null
 
 ui:
   style: chatgpt_like

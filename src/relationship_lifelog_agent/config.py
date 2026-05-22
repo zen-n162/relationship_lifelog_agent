@@ -23,6 +23,21 @@ class PathSettings:
     personal_lifelog_rag: str = "~/MyApplication/personal_lifelog_rag"
     notes_lifelog_rag: str = "~/MyApplication/notes_lifelog_rag"
     relationship_db: str = "~/MyApplication/relationship_lifelog_agent/data/relationship.sqlite"
+    personal_lifelog_db: str | None = None
+    notes_lifelog_db: str | None = None
+    personal_lifelog_export_dir: str | None = None
+    notes_lifelog_export_dir: str | None = None
+
+
+@dataclass(frozen=True)
+class AdapterSettings:
+    backend: str = "mock"
+    upstream_access_mode: str = "readonly"
+    prefer: str = "auto"
+    allow_sqlite_readonly: bool = True
+    allow_cli_subprocess: bool = True
+    allow_python_import: bool = True
+    copy_raw_upstream_data: bool = False
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,7 @@ class LlmSettings:
 @dataclass(frozen=True)
 class Settings:
     app: AppSettings = field(default_factory=AppSettings)
+    adapter: AdapterSettings = field(default_factory=AdapterSettings)
     paths: PathSettings = field(default_factory=PathSettings)
     ui: UiSettings = field(default_factory=UiSettings)
     relationship: RelationshipSettings = field(default_factory=RelationshipSettings)
@@ -90,6 +106,7 @@ def load_config(path: str | Path | None = None) -> Settings:
 
     settings = Settings(
         app=_merge_dataclass(AppSettings, data.get("app")),
+        adapter=_merge_dataclass(AdapterSettings, data.get("adapter")),
         paths=_merge_dataclass(PathSettings, data.get("paths")),
         ui=_merge_dataclass(UiSettings, data.get("ui")),
         relationship=_merge_dataclass(RelationshipSettings, data.get("relationship")),
@@ -109,6 +126,14 @@ def validate_local_safety(settings: Settings) -> None:
         raise ValueError("Gradio share must remain disabled.")
     if settings.app.host != "127.0.0.1":
         raise ValueError("Default server host must be 127.0.0.1.")
+    if settings.adapter.backend not in {"mock", "upstream_readonly"}:
+        raise ValueError("Adapter backend must be mock or upstream_readonly.")
+    if settings.adapter.upstream_access_mode != "readonly":
+        raise ValueError("Upstream access mode must remain readonly.")
+    if settings.adapter.copy_raw_upstream_data:
+        raise ValueError("Raw upstream data must not be copied.")
+    if settings.adapter.backend == "upstream_readonly" and not settings.adapter.allow_sqlite_readonly:
+        raise ValueError("upstream_readonly requires allow_sqlite_readonly=true.")
 
 
 def gradio_launch_kwargs(settings: Settings) -> dict[str, Any]:

@@ -391,7 +391,7 @@
             <tr>
               <td><code>adapters/</code></td>
               <td>上流lifelogアプリへの読み取り境界を定義します。</td>
-              <td>mock adapterのみ実装。実DB接続は未実装です。</td>
+              <td>mock adapterのみ実装。実DB接続は未実装で、将来の実接続は<code>upstream_readonly</code>としてopt-inにします。</td>
             </tr>
             <tr>
               <td><code>agent/</code></td>
@@ -462,7 +462,8 @@ python -m relationship_lifelog_agent.app</code></pre>
     <section>
       <h2>今後の拡張方針</h2>
       <ul>
-        <li>実データ接続はadapter境界の内側に追加し、上流アプリは読み取り中心で扱います。</li>
+        <li>実データ接続はadapter境界の内側に追加し、上流アプリはSQLite read-only接続を第一候補として扱います。</li>
+        <li>adapter evidenceは<code>source_pointer</code>、<code>source_type</code>、<code>sensitivity</code>、<code>confidence</code>、<code>evidence_strength</code>を持ちます。</li>
         <li>LLMを使う場合もlocal LLMをユーザー設定でのみ利用し、分類補助や要約補助に限定します。</li>
         <li>顔identity、LINE speaker identity、relationship labelはAIで自動推定しません。</li>
         <li>仕様、intent、DB schema、安全方針、UI挙動が変わったら、このHTML説明も更新します。</li>

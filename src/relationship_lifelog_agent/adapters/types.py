@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
 
@@ -13,7 +13,24 @@ class EvidenceItem:
     summary: str
     excerpt: str | None = None
     confidence: float = 0.5
+    evidence_strength: float = 0.5
+    sensitivity: str = "private"
+    source_pointer: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.source_pointer is None:
+            object.__setattr__(self, "source_pointer", _source_pointer(self.source_type, self.source_id))
+        _validate_score("confidence", self.confidence)
+        _validate_score("evidence_strength", self.evidence_strength)
+        _validate_sensitivity(self.sensitivity)
+
+    def for_mode(self, mode: str) -> "EvidenceItem":
+        """Return a display-safe view of this evidence for private/public mode."""
+
+        if mode == "public" and self.sensitivity != "public":
+            return replace(self, excerpt=None)
+        return self
 
 
 @dataclass(frozen=True)
@@ -24,19 +41,35 @@ class AdapterEvidence:
     role: str = "supporting"
     excerpt: str | None = None
     confidence: float = 0.5
+    evidence_strength: float = 0.5
+    sensitivity: str = "private"
+    source_pointer: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     source_type: ClassVar[str] = "manual"
 
-    def as_evidence_item(self) -> EvidenceItem:
+    def __post_init__(self) -> None:
+        if self.source_pointer is None:
+            object.__setattr__(self, "source_pointer", _source_pointer(self.source_type, self.source_id))
+        _validate_score("confidence", self.confidence)
+        _validate_score("evidence_strength", self.evidence_strength)
+        _validate_sensitivity(self.sensitivity)
+
+    def as_evidence_item(self, mode: str = "private") -> EvidenceItem:
+        excerpt = self.excerpt
+        if mode == "public" and self.sensitivity != "public":
+            excerpt = None
         return EvidenceItem(
             source_type=self.source_type,
             source_id=self.source_id,
             date=self.date,
             role=self.role,
             summary=self.summary,
-            excerpt=self.excerpt,
+            excerpt=excerpt,
             confidence=self.confidence,
+            evidence_strength=self.evidence_strength,
+            sensitivity=self.sensitivity,
+            source_pointer=self.source_pointer,
             metadata=dict(self.metadata),
         )
 
@@ -62,7 +95,6 @@ class EventEvidence(AdapterEvidence):
     source_type: ClassVar[str] = "note_event"
     event_type: str = "other"
     review_status: str = "candidate"
-    evidence_strength: float = 0.5
     severity: int = 0
 
 
@@ -104,7 +136,7 @@ class EvidenceBundle:
     thoughts: tuple[ThoughtEvidence, ...] = ()
     monthly_reflections: tuple[MonthlyReflection, ...] = ()
 
-    def to_evidence_items(self) -> list[EvidenceItem]:
+    def to_evidence_items(self, mode: str = "private") -> list[EvidenceItem]:
         evidence: list[AdapterEvidence] = [
             *self.line,
             *self.media,
@@ -114,7 +146,7 @@ class EvidenceBundle:
             *self.thoughts,
             *self.monthly_reflections,
         ]
-        return [item.as_evidence_item() for item in evidence]
+        return [item.as_evidence_item(mode=mode) for item in evidence]
 
 
 @dataclass(frozen=True)
@@ -142,3 +174,17 @@ class PostConflictActivity:
     confidence: float
     evidence_strength: float
     evidence: tuple[EvidenceItem, ...] = ()
+
+
+def _source_pointer(source_type: str, source_id: str) -> str:
+    return f"{source_type}:{source_id}"
+
+
+def _validate_score(name: str, value: float) -> None:
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"{name} must be between 0.0 and 1.0")
+
+
+def _validate_sensitivity(value: str) -> None:
+    if value not in {"public", "private", "sensitive"}:
+        raise ValueError("sensitivity must be one of: public, private, sensitive")
