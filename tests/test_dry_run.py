@@ -5,6 +5,7 @@ import pytest
 from relationship_lifelog_agent.adapters.types import LineEvidence
 from relationship_lifelog_agent.analytics.conflict import build_conflict_candidates
 from relationship_lifelog_agent.cli import main as cli_main
+from relationship_lifelog_agent.db.backup import list_relationship_db_backups
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import detect_answer_safety_violations
 
@@ -259,6 +260,16 @@ def test_dry_run_write_saves_unreviewed_candidate_events(tmp_path, capsys) -> No
     )
 
     output = capsys.readouterr().out
+    backups = list_relationship_db_backups(tmp_path / "relationship.sqlite")
+    assert len(backups) == 1
+    assert "pre-write backup path: [redacted_path]" in output
+    assert backups[0].filename in output
+    assert str(backups[0].path) not in output
+    assert "write safety candidate events: " in output
+    assert "write safety raw leakage issues: 0" in output
+    assert "write safety forbidden phrase issues: 0" in output
+    assert "post-write raw leakage issues: 0" in output
+    assert "post-write forbidden phrase issues: 0" in output
     assert "relationship_events written: " in output
     assert "relationship_events written: 0" not in output
 
@@ -308,6 +319,7 @@ def test_dry_run_write_prevents_duplicate_events(tmp_path, capsys) -> None:
     assert len(_post_conflict_activity_rows(tmp_path / "relationship.sqlite")) == first_activity_count
     assert "relationship_events written: 0" in second_output
     assert "duplicates skipped: " in second_output
+    assert "write safety preflight duplicate candidates: " in second_output
 
 
 def test_dry_run_write_does_not_store_raw_full_text_or_long_excerpts(tmp_path) -> None:

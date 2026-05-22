@@ -170,6 +170,10 @@ confidence, and evidence strength in the relationship DB. `counts-only` and
 bounded excerpts. No mode stores raw LINE full text, raw note full text, exact
 GPS, face data, or real photos.
 
+Before an explicit write, the CLI creates a relationship DB backup under
+`data/backups/`, runs duplicate and safety checks, and prints a counts-only
+summary with the backup path redacted.
+
 ```bash
 python -m relationship_lifelog_agent.cli analyze dry-run \
   --profile-id 1 \
@@ -178,6 +182,17 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
   --backend mock \
   --privacy-level private \
   --write
+```
+
+Relationship DB backups are managed explicitly. Restore only affects the
+relationship DB; upstream DBs remain read-only and are never restored or
+modified by this app.
+
+```bash
+python -m relationship_lifelog_agent.cli db backup
+python -m relationship_lifelog_agent.cli db backups
+python -m relationship_lifelog_agent.cli db restore \
+  --backup-path data/backups/relationship_YYYYMMDD_HHMMSS.sqlite
 ```
 
 ## MVP Features
@@ -191,6 +206,7 @@ python -m relationship_lifelog_agent.cli analyze dry-run \
 - Minimal Chat UI review actions for saved relationship event candidates.
 - Dry-run relationship event candidate extraction with `counts-only`, `redacted`,
   and `private` report levels plus explicit `--write` candidate saves.
+- Relationship DB-only backup/list/restore commands for rollback after explicit writes.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.
 - Public-mode redaction for names, relationship labels, GPS, paths, and raw excerpts.

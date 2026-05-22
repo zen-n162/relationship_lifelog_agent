@@ -21,7 +21,7 @@ from relationship_lifelog_agent.analytics.outing import build_post_conflict_outi
 from relationship_lifelog_agent.analytics.reconciliation import build_reconciliation_candidates
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.db.repository import RelationshipRepository
-from relationship_lifelog_agent.privacy.guard import sanitize_answer
+from relationship_lifelog_agent.privacy.guard import detect_answer_safety_violations, sanitize_answer
 from relationship_lifelog_agent.privacy.redaction import (
     FACE_CROP_RE,
     GPS_RE,
@@ -61,6 +61,23 @@ class WriteResult:
     post_conflict_activities_written: int
     duplicates: int
     warnings: list[str]
+    created_event_ids: tuple[int, ...] = ()
+    created_activity_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class WriteSafetyReport:
+    candidate_events: int
+    candidate_evidence: int
+    candidate_post_conflict_activities: int
+    duplicate_candidates: int
+    raw_leakage_issues: tuple[str, ...]
+    forbidden_phrase_issues: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.raw_leakage_issues and not self.forbidden_phrase_issues
 
 
 def run_relationship_dry_run(
@@ -163,12 +180,9 @@ def write_dry_run_candidates(
     duplicate_count = 0
     warnings: list[str] = []
     event_id_map: dict[str, int] = {}
-    events = [
-        *result.conflict_candidates,
-        *result.minor_misunderstanding_candidates,
-        *result.reconciliation_candidates,
-        *[_emotional_note_event(note) for note in result.emotional_notes],
-    ]
+    created_event_ids: list[int] = []
+    created_activity_ids: list[int] = []
+    events = _write_events(result)
 
     for event in events:
         source_pointer = _event_source_pointer(event)
@@ -178,6 +192,7 @@ def write_dry_run_candidates(
             event_type=event.event_type,
             event_date=event.date,
             source_pointer=source_pointer,
+            event=event,
         )
         if existing_id is not None:
             event_id_map[event.event_id] = existing_id
@@ -208,6 +223,7 @@ def write_dry_run_candidates(
         )
         event_id_map[event.event_id] = event_id
         events_written += 1
+        created_event_ids.append(event_id)
         for item in event.evidence:
             safe = _storage_evidence(item, mode=mode, privacy_level=privacy_level)
             repo.create_evidence(
@@ -226,7 +242,13 @@ def write_dry_run_candidates(
 
     for activity in result.post_conflict_outings:
         conflict_event_id = event_id_map.get(activity.conflict_event_id)
-        if _post_conflict_activity_exists(repo, conflict_event_id=conflict_event_id, activity=activity):
+        if _post_conflict_activity_exists(
+            repo,
+            conflict_event_id=conflict_event_id,
+            activity=activity,
+            mode=mode,
+            privacy_level=privacy_level,
+        ):
             duplicate_count += 1
             warnings.append(
                 "duplicate skipped: "
@@ -234,7 +256,7 @@ def write_dry_run_candidates(
                 f"{_storage_text(activity.place_label, mode=mode, privacy_level=privacy_level, max_chars=80)}"
             )
             continue
-        repo.create_post_conflict_activity(
+        activity_id = repo.create_post_conflict_activity(
             conflict_event_id=conflict_event_id,
             activity_event_id=None,
             activity_date=activity.date,
@@ -250,6 +272,7 @@ def write_dry_run_candidates(
             evidence_strength=activity.evidence_strength,
         )
         activities_written += 1
+        created_activity_ids.append(activity_id)
 
     return WriteResult(
         events_written=events_written,
@@ -257,6 +280,123 @@ def write_dry_run_candidates(
         post_conflict_activities_written=activities_written,
         duplicates=duplicate_count,
         warnings=warnings,
+        created_event_ids=tuple(created_event_ids),
+        created_activity_ids=tuple(created_activity_ids),
+    )
+
+
+def assess_write_safety(
+    *,
+    repo: RelationshipRepository,
+    result: DryRunResult,
+    profile_id: int,
+    date_from: str,
+    date_to: str,
+    mode: str,
+    privacy_level: str,
+) -> WriteSafetyReport:
+    _validate_privacy_level(privacy_level, mode=mode)
+    warnings: list[str] = []
+    if not date_from or not date_to:
+        warnings.append("date range is required for write safety")
+    if profile_id is None:
+        warnings.append("profile_id is required for write safety")
+
+    events = _write_events(result)
+    duplicate_candidates = 0
+    planned_records: list[tuple[str, str]] = []
+    planned_evidence_count = 0
+    for event in events:
+        source_pointer = _event_source_pointer(event)
+        if _find_duplicate_event(
+            repo,
+            profile_id=profile_id,
+            event_type=event.event_type,
+            event_date=event.date,
+            source_pointer=source_pointer,
+            event=event,
+        ):
+            duplicate_candidates += 1
+        planned_records.append(
+            (
+                f"event:{event.event_type}:{event.date}",
+                _storage_text(
+                    _event_storage_summary(event, privacy_level=privacy_level),
+                    mode=mode,
+                    privacy_level=privacy_level,
+                    max_chars=MAX_STORED_SUMMARY_CHARS,
+                ),
+            )
+        )
+        for item in event.evidence:
+            safe = _storage_evidence(item, mode=mode, privacy_level=privacy_level)
+            planned_evidence_count += 1
+            planned_records.extend(
+                [
+                    (f"evidence:{safe.source_type}:{safe.source_id}:summary", safe.summary),
+                    (f"evidence:{safe.source_type}:{safe.source_id}:excerpt", safe.excerpt or ""),
+                    (f"evidence:{safe.source_type}:{safe.source_id}:source_pointer", safe.source_pointer or ""),
+                ]
+            )
+
+    for activity in result.post_conflict_outings:
+        planned_records.append(
+            (
+                f"post_conflict_activity:{activity.date}",
+                _storage_text(
+                    _activity_storage_label(activity, privacy_level=privacy_level),
+                    mode=mode,
+                    privacy_level=privacy_level,
+                    max_chars=80,
+                ),
+            )
+        )
+
+    raw_issues, forbidden_issues = _scan_text_records(planned_records, mode=mode)
+    return WriteSafetyReport(
+        candidate_events=len(events),
+        candidate_evidence=planned_evidence_count,
+        candidate_post_conflict_activities=len(result.post_conflict_outings),
+        duplicate_candidates=duplicate_candidates,
+        raw_leakage_issues=tuple(raw_issues),
+        forbidden_phrase_issues=tuple(forbidden_issues),
+        warnings=tuple(warnings),
+    )
+
+
+def scan_created_write_rows(
+    *,
+    repo: RelationshipRepository,
+    write_result: WriteResult,
+    mode: str,
+) -> WriteSafetyReport:
+    records: list[tuple[str, str]] = []
+    evidence_count = 0
+    for event_id in write_result.created_event_ids:
+        event = repo.get_event(event_id)
+        if event:
+            records.append((f"event:{event_id}:summary", str(event.get("summary") or "")))
+        for evidence in repo.list_evidence(event_id=event_id, limit=200):
+            evidence_count += 1
+            records.extend(
+                [
+                    (f"evidence:{event_id}:summary", str(evidence.get("summary") or "")),
+                    (f"evidence:{event_id}:excerpt", str(evidence.get("excerpt") or "")),
+                    (f"evidence:{event_id}:source_pointer", str(evidence.get("source_pointer") or "")),
+                ]
+            )
+    for activity_id in write_result.created_activity_ids:
+        activity = repo.get_post_conflict_activity(activity_id)
+        if activity:
+            records.append((f"post_conflict_activity:{activity_id}:place_label", str(activity.get("place_label") or "")))
+    raw_issues, forbidden_issues = _scan_text_records(records, mode=mode)
+    return WriteSafetyReport(
+        candidate_events=write_result.events_written,
+        candidate_evidence=evidence_count,
+        candidate_post_conflict_activities=write_result.post_conflict_activities_written,
+        duplicate_candidates=write_result.duplicates,
+        raw_leakage_issues=tuple(raw_issues),
+        forbidden_phrase_issues=tuple(forbidden_issues),
     )
 
 
@@ -534,6 +674,15 @@ def _emotional_note_event(note: NoteEvidence) -> RelationshipEvent:
     )
 
 
+def _write_events(result: DryRunResult) -> list[RelationshipEvent]:
+    return [
+        *result.conflict_candidates,
+        *result.minor_misunderstanding_candidates,
+        *result.reconciliation_candidates,
+        *[_emotional_note_event(note) for note in result.emotional_notes],
+    ]
+
+
 def _event_source_pointer(event: RelationshipEvent) -> str:
     pointer = event.metadata.get("source_pointer")
     if pointer:
@@ -550,7 +699,9 @@ def _find_duplicate_event(
     event_type: str,
     event_date: str,
     source_pointer: str,
+    event: RelationshipEvent,
 ) -> int | None:
+    incoming_signature = _event_evidence_signature(event.evidence)
     with repo.connect() as conn:
         row = conn.execute(
             """
@@ -566,7 +717,31 @@ def _find_duplicate_event(
             """,
             (profile_id, event_type, event_date, source_pointer),
         ).fetchone()
-    return int(row[0]) if row else None
+        if row:
+            return int(row[0])
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM relationship_events
+            WHERE profile_id = ?
+              AND event_type = ?
+              AND event_date = ?
+            """,
+            (profile_id, event_type, event_date),
+        ).fetchall()
+        for candidate in rows:
+            evidence_rows = conn.execute(
+                """
+                SELECT source_type, source_id, source_pointer
+                FROM relationship_event_evidence
+                WHERE event_id = ?
+                """,
+                (candidate["id"],),
+            ).fetchall()
+            existing_signature = _stored_evidence_signature(evidence_rows)
+            if incoming_signature and incoming_signature == existing_signature:
+                return int(candidate["id"])
+    return None
 
 
 def _post_conflict_activity_exists(
@@ -574,12 +749,20 @@ def _post_conflict_activity_exists(
     *,
     conflict_event_id: int | None,
     activity: PostConflictActivity,
+    mode: str,
+    privacy_level: str,
 ) -> bool:
     conflict_clause = "conflict_event_id = ?" if conflict_event_id is not None else "conflict_event_id IS NULL"
     params: list[object] = []
     if conflict_event_id is not None:
         params.append(conflict_event_id)
-    params.extend([activity.date, activity.activity_type, activity.place_label])
+    stored_place_label = _storage_text(
+        _activity_storage_label(activity, privacy_level=privacy_level),
+        mode=mode,
+        privacy_level=privacy_level,
+        max_chars=80,
+    )
+    params.extend([activity.date, activity.activity_type, stored_place_label])
     with repo.connect() as conn:
         row = conn.execute(
             f"""
@@ -594,6 +777,24 @@ def _post_conflict_activity_exists(
             params,
         ).fetchone()
     return row is not None
+
+
+def _event_evidence_signature(evidence: tuple[EvidenceItem, ...] | list[EvidenceItem]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            f"{item.source_type}:{_storage_text(str(item.source_pointer or item.source_id), mode='private', max_chars=180)}"
+            for item in evidence
+        )
+    )
+
+
+def _stored_evidence_signature(rows: list[Any]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            f"{row['source_type']}:{_storage_text(str(row['source_pointer'] or row['source_id']), mode='private', max_chars=180)}"
+            for row in rows
+        )
+    )
 
 
 def _storage_evidence(item: EvidenceItem, *, mode: str, privacy_level: str) -> EvidenceItem:
@@ -691,6 +892,31 @@ def _redact_always_private_hazards(text: str) -> str:
     safe = GPS_RE.sub("[exact GPS redacted]", safe)
     safe = PRIVATE_PATH_RE.sub("[private path redacted]", safe)
     return safe
+
+
+def _scan_text_records(records: list[tuple[str, str]], *, mode: str) -> tuple[list[str], list[str]]:
+    raw_issues: list[str] = []
+    forbidden_issues: list[str] = []
+    for label, text in records:
+        if not text:
+            continue
+        for code, pattern in _RAW_LEAKAGE_PATTERNS:
+            if pattern.search(text):
+                raw_issues.append(f"{label}:{code}")
+        for violation in detect_answer_safety_violations(text, mode=mode):
+            forbidden_issues.append(f"{label}:{violation.code}")
+    return sorted(set(raw_issues)), sorted(set(forbidden_issues))
+
+
+_RAW_LEAKAGE_PATTERNS = (
+    ("line_full_text", LINE_FULL_TEXT_RE),
+    ("note_full_text", NOTE_FULL_TEXT_RE),
+    ("exact_gps", GPS_RE),
+    ("face_crop", FACE_CROP_RE),
+    ("photo_path", PHOTO_PATH_RE),
+    ("private_path", PRIVATE_PATH_RE),
+    ("source_path", SOURCE_PATH_RE),
+)
 
 
 def _profile_person_names(profile: ProfileContext | None) -> list[str]:

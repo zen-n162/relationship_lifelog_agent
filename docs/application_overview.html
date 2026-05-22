@@ -363,6 +363,13 @@
             件数、期間coverage、warningだけをreportします。relationship DBへは書き込みません。
           </p>
         </article>
+        <article class="card">
+          <h3>backupとrollback</h3>
+          <p>
+            <code>analyze dry-run --write</code>の前にrelationship DBだけをbackupし、
+            duplicate、raw leakage、禁止表現を確認します。restoreは明示CLIでのみ実行します。
+          </p>
+        </article>
       </div>
     </section>
 
@@ -575,6 +582,11 @@ python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
   --privacy-level counts-only \
   --output data/exports/dry_run_relationship_2025Q1.md</code></pre>
       <p><code>--write</code>を明示した場合だけ、relationship DBへcandidateとして保存します。保存するのはevent summary、source pointer、privacy levelに応じた短いexcerpt、confidence、evidence strengthで、生LINE全文、生メモ全文、正確GPS、顔情報、写真実体は保存しません。<code>counts-only</code>と<code>redacted</code>ではexcerptを保存しません。保存時の<code>status</code>は<code>candidate</code>、<code>review_status</code>は<code>unreviewed</code>です。</p>
+      <p>
+        <code>--write</code>の直前には<code>data/backups/</code>へrelationship DB backupを作成し、
+        candidate count、duplicate count、raw leakage scan、禁止表現scan、profile/date range/privacy levelを確認します。
+        backup pathはCLI出力ではredactします。
+      </p>
       <pre><code>python -m relationship_lifelog_agent.cli analyze dry-run \
   --profile-id 1 \
   --date-from 2025-01-01 \
@@ -582,6 +594,11 @@ python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
   --backend mock \
   --privacy-level private \
   --write</code></pre>
+      <p>backupとrestoreはrelationship DBだけを対象にした明示コマンドです。上流DBは変更しません。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli db backup
+python -m relationship_lifelog_agent.cli db backups
+python -m relationship_lifelog_agent.cli db restore \
+  --backup-path data/backups/relationship_YYYYMMDD_HHMMSS.sqlite</code></pre>
       <p>継続評価はmock backendで安定実行できます。public/private安全性、禁止表現、根拠の有無、弱い根拠への注意、関係ラベル推定の抑制を確認します。</p>
       <pre><code>python eval/run_eval.py
 python eval/run_eval.py --format json --output data/exports/eval_result.json</code></pre>

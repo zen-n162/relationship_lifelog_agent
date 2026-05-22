@@ -6,9 +6,20 @@ import sys
 from typing import Any
 
 from relationship_lifelog_agent.agent.memory import build_memory
-from relationship_lifelog_agent.analytics.dry_run import PRIVACY_LEVELS, run_relationship_dry_run, write_dry_run_candidates
+from relationship_lifelog_agent.analytics.dry_run import (
+    PRIVACY_LEVELS,
+    assess_write_safety,
+    run_relationship_dry_run,
+    scan_created_write_rows,
+    write_dry_run_candidates,
+)
 from relationship_lifelog_agent.app import main as app_main
 from relationship_lifelog_agent.config import load_config
+from relationship_lifelog_agent.db.backup import (
+    create_relationship_db_backup,
+    list_relationship_db_backups,
+    restore_relationship_db_backup,
+)
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.doctor import render_doctor_json, render_doctor_text, run_doctor
 from relationship_lifelog_agent.profiles import load_profile_context
@@ -34,6 +45,9 @@ def main(argv: list[str] | None = None) -> None:
     if _is_upstream_command(args):
         _upstream_main(args)
         return
+    if _is_db_command(args):
+        _db_main(args)
+        return
     if _is_profile_command(args):
         _profile_main(args)
         return
@@ -49,6 +63,10 @@ def _is_doctor_command(args: list[str]) -> bool:
 
 def _is_upstream_command(args: list[str]) -> bool:
     return "upstream" in args
+
+
+def _is_db_command(args: list[str]) -> bool:
+    return "db" in args
 
 
 def _is_profile_command(args: list[str]) -> bool:
@@ -150,6 +168,38 @@ def _profile_main(argv: list[str]) -> None:
         raise SystemExit(str(exc)) from exc
 
 
+def _db_main(argv: list[str]) -> None:
+    parser = _build_db_parser()
+    args = parser.parse_args(argv)
+    settings = load_config(args.config)
+    db_path = settings.paths.relationship_db
+    try:
+        if args.db_command == "backup":
+            RelationshipRepository(db_path)
+            backup = create_relationship_db_backup(db_path)
+            print("relationship DB backup created: [redacted_path]")
+            print(f"backup file: {backup.filename}")
+        elif args.db_command == "backups":
+            backups = list_relationship_db_backups(db_path)
+            print("relationship DB backups:")
+            if not backups:
+                print("- none")
+            for backup in backups:
+                print(f"- {backup.filename} size_bytes={backup.size_bytes}")
+            print("backup directory: [redacted_path]")
+        elif args.db_command == "restore":
+            restored = restore_relationship_db_backup(db_path, backup_path=args.backup_path)
+            print("relationship DB restored from: [redacted_path]")
+            print(f"backup file: {restored.restored_from.name}")
+            if restored.pre_restore_backup:
+                print("pre-restore backup created: [redacted_path]")
+                print(f"pre-restore backup file: {restored.pre_restore_backup.name}")
+        else:
+            parser.error("unknown db command")
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def _analyze_main(argv: list[str]) -> None:
     parser = _build_analyze_parser()
     args = parser.parse_args(argv)
@@ -179,6 +229,31 @@ def _analyze_main(argv: list[str]) -> None:
         print("dry-run report written: none")
     if args.write:
         repo = RelationshipRepository(settings.paths.relationship_db)
+        safety = assess_write_safety(
+            repo=repo,
+            result=result,
+            profile_id=args.profile_id,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            mode=args.mode,
+            privacy_level=args.privacy_level,
+        )
+        print(f"write safety candidate events: {safety.candidate_events}")
+        print(f"write safety candidate evidence: {safety.candidate_evidence}")
+        print(f"write safety candidate post_conflict_activities: {safety.candidate_post_conflict_activities}")
+        print(f"write safety preflight duplicate candidates: {safety.duplicate_candidates}")
+        print(f"write safety raw leakage issues: {len(safety.raw_leakage_issues)}")
+        print(f"write safety forbidden phrase issues: {len(safety.forbidden_phrase_issues)}")
+        print("write safety profile configured: true")
+        print(f"write safety date range: {args.date_from}..{args.date_to}")
+        print(f"write safety privacy_level: {args.privacy_level}")
+        for warning in safety.warnings:
+            print(f"warning: {warning}")
+        if not safety.ok:
+            raise SystemExit("write safety failed; relationship DB was not modified")
+        backup = create_relationship_db_backup(settings.paths.relationship_db)
+        print("pre-write backup path: [redacted_path]")
+        print(f"pre-write backup file: {backup.filename}")
         write_result = write_dry_run_candidates(
             repo=repo,
             result=result,
@@ -186,12 +261,17 @@ def _analyze_main(argv: list[str]) -> None:
             mode=args.mode,
             privacy_level=args.privacy_level,
         )
+        post_write_safety = scan_created_write_rows(repo=repo, write_result=write_result, mode=args.mode)
         print(f"relationship_events written: {write_result.events_written}")
         print(f"relationship_event_evidence written: {write_result.evidence_written}")
         print(f"post_conflict_activities written: {write_result.post_conflict_activities_written}")
         print(f"duplicates skipped: {write_result.duplicates}")
+        print(f"post-write raw leakage issues: {len(post_write_safety.raw_leakage_issues)}")
+        print(f"post-write forbidden phrase issues: {len(post_write_safety.forbidden_phrase_issues)}")
         for warning in write_result.warnings:
             print(f"warning: {warning}")
+        if not post_write_safety.ok:
+            raise SystemExit("post-write safety failed; use db restore with the pre-write backup if needed")
     else:
         print("relationship_events written: 0")
     print(f"conflict candidates: {len(result.conflict_candidates)}")
@@ -225,6 +305,19 @@ def _build_doctor_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="Diagnose local config, DBs, adapters, and privacy settings.")
     doctor.add_argument("--backend", choices=("mock", "upstream_readonly"), default=None)
     doctor.add_argument("--format", choices=("text", "json"), default="text")
+    return parser
+
+
+def _build_db_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Relationship Lifelog Agent relationship DB CLI.")
+    parser.add_argument("--config", default=None, help="Optional private config path.")
+    subparsers = parser.add_subparsers(dest="resource", required=True)
+    db = subparsers.add_parser("db", help="Back up or restore the relationship DB.")
+    db_sub = db.add_subparsers(dest="db_command", required=True)
+    db_sub.add_parser("backup", help="Create a backup of the relationship DB only.")
+    db_sub.add_parser("backups", help="List relationship DB backups without printing private paths.")
+    restore = db_sub.add_parser("restore", help="Restore relationship DB from an explicit backup path.")
+    restore.add_argument("--backup-path", required=True)
     return parser
 
 
