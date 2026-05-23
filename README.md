@@ -49,8 +49,9 @@ output. Debug output is off by default.
 While a question is running, the UI streams safe progress messages such as
 question understanding, manual profile checks, information needs, read-only
 tool use, evidence filtering, aggregation, and safety checks. These messages are
-kept in a single collapsible process block. The block is marked done after the
-final answer, so completed steps do not keep showing an in-progress spinner.
+kept in a single collapsible process block. After the final answer appears, the
+process block is re-added in the done state after the answer, so completed steps
+do not keep showing an in-progress spinner and the details stay tucked away.
 They are tool usage summaries, not raw chain-of-thought. They never include raw
 LINE text, raw note text, exact GPS, face data, image paths, private paths, or
 raw LLM prompts.

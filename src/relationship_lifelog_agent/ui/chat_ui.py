@@ -331,10 +331,9 @@ def build_ui_chat_turn_stream(
         if event.kind == "final_answer":
             latest_state = dict(event.metadata.get("conversation_state") or latest_state)
             latest_targets = _review_targets_from_metadata(event.metadata.get("review_targets"))
-            running_history = [*base_running_history]
+            running_history = [*base_running_history, {"role": "assistant", "content": event.message}]
             if progress_events:
                 running_history.append(_progress_chat_message(progress_events, done=True))
-            running_history.append({"role": "assistant", "content": event.message})
         elif _show_progress_event(event, settings):
             progress_events.append(event)
             running_history = [
@@ -523,6 +522,7 @@ def _progress_chat_message(
             "title": "処理プロセス",
             "status": status,
             "kind": "progress",
+            "log": "完了" if done else "実行中",
         },
     }
 

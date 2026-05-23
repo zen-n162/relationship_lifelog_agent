@@ -92,9 +92,11 @@ def test_chat_ui_stream_handler_is_generator_and_sets_metadata(tmp_path) -> None
     ]
     assert len(progress_messages) == 1
     assert progress_messages[0]["metadata"]["status"] == "done"
+    assert progress_messages[0]["metadata"]["log"] == "完了"
     assert not [message for message in final_history if message.get("metadata", {}).get("status") == "pending"]
-    assert final_history[-1]["role"] == "assistant"
-    assert "要約:" in final_history[-1]["content"]
+    assert final_history[-1]["metadata"]["title"] == "処理プロセス"
+    assert final_history[-2]["role"] == "assistant"
+    assert "要約:" in final_history[-2]["content"]
     gr.Chatbot().postprocess(final_history)
 
 
