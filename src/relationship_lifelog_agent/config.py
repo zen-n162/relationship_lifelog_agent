@@ -56,6 +56,9 @@ class FullScanSettings:
 class AnalysisSettings:
     mode: str = "safe_window"
     default_scope: str = "ask_llm"
+    max_runtime_seconds: int = 300
+    max_llm_calls: int = 20
+    max_tool_calls: int = 50
     allow_full_corpus: bool = True
     allow_full_range: bool = True
     allow_single_context_full_prompt: bool = True
@@ -225,6 +228,12 @@ def validate_local_safety(settings: Settings) -> None:
         raise ValueError("private_full_range requires allow_full_range=true.")
     if settings.analysis.mode == "private_full_corpus" and not settings.analysis.allow_full_corpus:
         raise ValueError("private_full_corpus requires allow_full_corpus=true.")
+    if settings.analysis.max_runtime_seconds < 1:
+        raise ValueError("analysis.max_runtime_seconds must be at least 1.")
+    if settings.analysis.max_llm_calls < 0:
+        raise ValueError("analysis.max_llm_calls must not be negative.")
+    if settings.analysis.max_tool_calls < 1:
+        raise ValueError("analysis.max_tool_calls must be at least 1.")
     if settings.analysis.full_scan.batch_strategy not in {"chronological", "source_then_time", "hybrid"}:
         raise ValueError("full_scan.batch_strategy must be chronological, source_then_time, or hybrid.")
     if settings.ui.show_raw_llm_thinking:

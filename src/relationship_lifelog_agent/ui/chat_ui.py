@@ -4,6 +4,7 @@ from dataclasses import replace
 from collections.abc import Iterator
 from typing import Any
 
+from relationship_lifelog_agent.agent.agent_runtime import RuntimeBudget
 from relationship_lifelog_agent.agent.executor import ChatAnswer, ReviewTarget
 from relationship_lifelog_agent.agent.reasoning_orchestrator import answer_with_reasoning, stream_answer
 from relationship_lifelog_agent.agent.streaming import AgentStreamEvent
@@ -23,6 +24,9 @@ REVIEW_ACTION_CHOICES = (
     ("仲直り済みにする", "mark_as_reconciled"),
     ("再分析対象にする", "needs_reanalysis"),
 )
+
+ANALYSIS_MODE_CHOICES = ("safe_window", "private_full_range", "private_full_corpus")
+DATE_SCOPE_CHOICES = ("auto", "all", "custom")
 
 
 def build_chat_ui(settings: Settings) -> Any:
@@ -56,6 +60,18 @@ def build_chat_ui(settings: Settings) -> Any:
                 choices=["mock", "upstream_readonly"],
                 value=settings.adapter.backend,
                 label="Backend",
+                interactive=True,
+            )
+            analysis_mode = gr.Dropdown(
+                choices=list(ANALYSIS_MODE_CHOICES),
+                value=settings.analysis.mode,
+                label="Analysis Mode",
+                interactive=True,
+            )
+            date_scope = gr.Radio(
+                choices=list(DATE_SCOPE_CHOICES),
+                value=_ui_date_scope(settings.analysis.default_scope),
+                label="Date Scope",
                 interactive=True,
             )
             profile = gr.Dropdown(
@@ -104,6 +120,62 @@ def build_chat_ui(settings: Settings) -> Any:
                 precision=0,
                 minimum=1,
             )
+            with gr.Accordion("Include raw payload (private full only)", open=False):
+                include_raw_line_text = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_raw_line_text,
+                    label="LINE全文",
+                )
+                include_raw_note_text = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_raw_note_text,
+                    label="メモ全文",
+                )
+                include_photo_paths = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_photo_paths,
+                    label="写真パス",
+                )
+                include_exact_gps = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_exact_gps,
+                    label="正確GPS",
+                )
+                include_face_crops = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_face_crops,
+                    label="顔crop",
+                )
+                include_face_embeddings = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_face_embeddings,
+                    label="顔embedding",
+                )
+                include_private_file_paths = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_private_file_paths,
+                    label="private path",
+                )
+                include_unverified_person_candidates = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_unverified_person_candidates,
+                    label="未確認person候補",
+                )
+                include_unverified_speaker_candidates = gr.Checkbox(
+                    value=settings.private_full_llm_payload.allow_unverified_speaker_candidates,
+                    label="未確認speaker候補",
+                )
+            with gr.Row():
+                max_runtime = gr.Number(
+                    value=settings.analysis.max_runtime_seconds,
+                    label="max_runtime sec",
+                    precision=0,
+                    minimum=1,
+                )
+                max_llm_calls = gr.Number(
+                    value=settings.analysis.max_llm_calls,
+                    label="max_llm_calls",
+                    precision=0,
+                    minimum=0,
+                )
+                max_batches = gr.Number(
+                    value=settings.analysis.full_scan.max_batches_per_run,
+                    label="max_batches",
+                    precision=0,
+                    minimum=1,
+                )
             mode = gr.Radio(["private", "public"], value=settings.app.mode, label="Mode")
             debug = gr.Checkbox(value=settings.ui.show_debug_by_default, label="Debug output")
         with gr.Accordion("Review last answer", open=False):
@@ -129,10 +201,24 @@ def build_chat_ui(settings: Settings) -> Any:
             user_message: Any,
             history: list[Any] | None,
             selected_backend: str,
+            selected_analysis_mode: str,
+            selected_date_scope: str,
             selected_profile: str | None,
             selected_date_from: str | None,
             selected_date_to: str | None,
             selected_window_days: int | float | None,
+            raw_line_text: bool,
+            raw_note_text: bool,
+            photo_paths: bool,
+            exact_gps: bool,
+            face_crops: bool,
+            face_embeddings: bool,
+            private_file_paths: bool,
+            unverified_person_candidates: bool,
+            unverified_speaker_candidates: bool,
+            selected_max_runtime: int | float | None,
+            selected_max_llm_calls: int | float | None,
+            selected_max_batches: int | float | None,
             selected_mode: str,
             show_debug: bool,
             current_conversation_state: dict[str, object] | None,
@@ -142,23 +228,63 @@ def build_chat_ui(settings: Settings) -> Any:
                 history,
                 base_settings=settings,
                 selected_backend=selected_backend,
+                analysis_mode=selected_analysis_mode,
+                date_scope=selected_date_scope,
                 selected_profile=selected_profile,
                 date_from=selected_date_from,
                 date_to=selected_date_to,
                 post_conflict_window_days=selected_window_days,
+                include_raw_line_text=raw_line_text,
+                include_raw_note_text=raw_note_text,
+                include_photo_paths=photo_paths,
+                include_exact_gps=exact_gps,
+                include_face_crops=face_crops,
+                include_face_embeddings=face_embeddings,
+                include_private_file_paths=private_file_paths,
+                include_unverified_person_candidates=unverified_person_candidates,
+                include_unverified_speaker_candidates=unverified_speaker_candidates,
+                max_runtime=selected_max_runtime,
+                max_llm_calls=selected_max_llm_calls,
+                max_batches=selected_max_batches,
                 mode=selected_mode,
                 show_debug=show_debug,
                 conversation_state=current_conversation_state,
             )
 
+        chat_inputs = [
+            message,
+            chatbot,
+            backend,
+            analysis_mode,
+            date_scope,
+            profile,
+            date_from,
+            date_to,
+            post_conflict_window_days,
+            include_raw_line_text,
+            include_raw_note_text,
+            include_photo_paths,
+            include_exact_gps,
+            include_face_crops,
+            include_face_embeddings,
+            include_private_file_paths,
+            include_unverified_person_candidates,
+            include_unverified_speaker_candidates,
+            max_runtime,
+            max_llm_calls,
+            max_batches,
+            mode,
+            debug,
+            conversation_state,
+        ]
         send.click(
             respond,
-            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug, conversation_state],
+            chat_inputs,
             [message, chatbot, review_target, review_targets_md, review_targets_state, conversation_state],
         )
         message.submit(
             respond,
-            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug, conversation_state],
+            chat_inputs,
             [message, chatbot, review_target, review_targets_md, review_targets_state, conversation_state],
         )
         save_review.click(
@@ -197,10 +323,24 @@ def build_ui_chat_response(
     *,
     base_settings: Settings,
     selected_backend: str,
+    analysis_mode: str | None = None,
+    date_scope: str | None = None,
     selected_profile: str | None,
     date_from: str | None,
     date_to: str | None,
     post_conflict_window_days: int | float | None,
+    include_raw_line_text: bool | None = None,
+    include_raw_note_text: bool | None = None,
+    include_photo_paths: bool | None = None,
+    include_exact_gps: bool | None = None,
+    include_face_crops: bool | None = None,
+    include_face_embeddings: bool | None = None,
+    include_private_file_paths: bool | None = None,
+    include_unverified_person_candidates: bool | None = None,
+    include_unverified_speaker_candidates: bool | None = None,
+    max_runtime: int | float | None = None,
+    max_llm_calls: int | float | None = None,
+    max_batches: int | float | None = None,
     mode: str,
     show_debug: bool = False,
 ) -> tuple[list[dict[str, str]], ChatAnswer | None]:
@@ -209,10 +349,24 @@ def build_ui_chat_response(
         history,
         base_settings=base_settings,
         selected_backend=selected_backend,
+        analysis_mode=analysis_mode,
+        date_scope=date_scope,
         selected_profile=selected_profile,
         date_from=date_from,
         date_to=date_to,
         post_conflict_window_days=post_conflict_window_days,
+        include_raw_line_text=include_raw_line_text,
+        include_raw_note_text=include_raw_note_text,
+        include_photo_paths=include_photo_paths,
+        include_exact_gps=include_exact_gps,
+        include_face_crops=include_face_crops,
+        include_face_embeddings=include_face_embeddings,
+        include_private_file_paths=include_private_file_paths,
+        include_unverified_person_candidates=include_unverified_person_candidates,
+        include_unverified_speaker_candidates=include_unverified_speaker_candidates,
+        max_runtime=max_runtime,
+        max_llm_calls=max_llm_calls,
+        max_batches=max_batches,
         mode=mode,
         show_debug=show_debug,
         conversation_state=None,
@@ -226,10 +380,24 @@ def build_ui_chat_turn(
     *,
     base_settings: Settings,
     selected_backend: str,
+    analysis_mode: str | None = None,
+    date_scope: str | None = None,
     selected_profile: str | None,
     date_from: str | None,
     date_to: str | None,
     post_conflict_window_days: int | float | None,
+    include_raw_line_text: bool | None = None,
+    include_raw_note_text: bool | None = None,
+    include_photo_paths: bool | None = None,
+    include_exact_gps: bool | None = None,
+    include_face_crops: bool | None = None,
+    include_face_embeddings: bool | None = None,
+    include_private_file_paths: bool | None = None,
+    include_unverified_person_candidates: bool | None = None,
+    include_unverified_speaker_candidates: bool | None = None,
+    max_runtime: int | float | None = None,
+    max_llm_calls: int | float | None = None,
+    max_batches: int | float | None = None,
     mode: str,
     show_debug: bool = False,
     conversation_state: dict[str, object] | None = None,
@@ -242,10 +410,24 @@ def build_ui_chat_turn(
         question,
         base_settings=base_settings,
         selected_backend=selected_backend,
+        analysis_mode=analysis_mode,
+        date_scope=date_scope,
         selected_profile=selected_profile,
         date_from=date_from,
         date_to=date_to,
         post_conflict_window_days=post_conflict_window_days,
+        include_raw_line_text=include_raw_line_text,
+        include_raw_note_text=include_raw_note_text,
+        include_photo_paths=include_photo_paths,
+        include_exact_gps=include_exact_gps,
+        include_face_crops=include_face_crops,
+        include_face_embeddings=include_face_embeddings,
+        include_private_file_paths=include_private_file_paths,
+        include_unverified_person_candidates=include_unverified_person_candidates,
+        include_unverified_speaker_candidates=include_unverified_speaker_candidates,
+        max_runtime=max_runtime,
+        max_llm_calls=max_llm_calls,
+        max_batches=max_batches,
         mode=mode,
         show_debug=show_debug,
         conversation_state=conversation_state,
@@ -267,10 +449,24 @@ def build_ui_chat_turn_stream(
     *,
     base_settings: Settings,
     selected_backend: str,
+    analysis_mode: str | None = None,
+    date_scope: str | None = None,
     selected_profile: str | None,
     date_from: str | None,
     date_to: str | None,
     post_conflict_window_days: int | float | None,
+    include_raw_line_text: bool | None = None,
+    include_raw_note_text: bool | None = None,
+    include_photo_paths: bool | None = None,
+    include_exact_gps: bool | None = None,
+    include_face_crops: bool | None = None,
+    include_face_embeddings: bool | None = None,
+    include_private_file_paths: bool | None = None,
+    include_unverified_person_candidates: bool | None = None,
+    include_unverified_speaker_candidates: bool | None = None,
+    max_runtime: int | float | None = None,
+    max_llm_calls: int | float | None = None,
+    max_batches: int | float | None = None,
     mode: str,
     show_debug: bool = False,
     conversation_state: dict[str, object] | None = None,
@@ -282,8 +478,26 @@ def build_ui_chat_turn_stream(
     if not question:
         yield "", normalized_history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], conversation_state or {}
         return
-    settings = _settings_for_ui(base_settings, selected_backend, post_conflict_window_days)
+    settings = _settings_for_ui(
+        base_settings,
+        selected_backend,
+        post_conflict_window_days,
+        analysis_mode=analysis_mode,
+        date_scope=date_scope,
+        include_raw_line_text=include_raw_line_text,
+        include_raw_note_text=include_raw_note_text,
+        include_photo_paths=include_photo_paths,
+        include_exact_gps=include_exact_gps,
+        include_face_crops=include_face_crops,
+        include_face_embeddings=include_face_embeddings,
+        include_private_file_paths=include_private_file_paths,
+        include_unverified_person_candidates=include_unverified_person_candidates,
+        include_unverified_speaker_candidates=include_unverified_speaker_candidates,
+        max_batches=max_batches,
+    )
     profile_id = parse_profile_choice(selected_profile)
+    scoped_date_from, scoped_date_to = _dates_for_scope(date_scope, date_from, date_to)
+    runtime_budget = _runtime_budget_from_ui(max_runtime=max_runtime, max_llm_calls=max_llm_calls)
     base_running_history: list[dict[str, Any]] = [*normalized_history, {"role": "user", "content": question}]
     if not settings.ui.stream_progress or not settings.ui.show_progress_messages:
         history_once, chat_answer, updated_state = build_ui_chat_turn(
@@ -291,10 +505,24 @@ def build_ui_chat_turn_stream(
             normalized_history,
             base_settings=base_settings,
             selected_backend=selected_backend,
+            analysis_mode=analysis_mode,
+            date_scope=date_scope,
             selected_profile=selected_profile,
             date_from=date_from,
             date_to=date_to,
             post_conflict_window_days=post_conflict_window_days,
+            include_raw_line_text=include_raw_line_text,
+            include_raw_note_text=include_raw_note_text,
+            include_photo_paths=include_photo_paths,
+            include_exact_gps=include_exact_gps,
+            include_face_crops=include_face_crops,
+            include_face_embeddings=include_face_embeddings,
+            include_private_file_paths=include_private_file_paths,
+            include_unverified_person_candidates=include_unverified_person_candidates,
+            include_unverified_speaker_candidates=include_unverified_speaker_candidates,
+            max_runtime=max_runtime,
+            max_llm_calls=max_llm_calls,
+            max_batches=max_batches,
             mode=mode,
             show_debug=show_debug,
             conversation_state=conversation_state,
@@ -320,11 +548,12 @@ def build_ui_chat_turn_stream(
         mode=mode,
         settings=settings,
         selected_profile_id=profile_id,
-        date_from=_clean_text(date_from),
-        date_to=_clean_text(date_to),
+        date_from=scoped_date_from,
+        date_to=scoped_date_to,
         post_conflict_window_days=_safe_window_days(post_conflict_window_days),
         state=conversation_state,
         show_debug=show_debug,
+        runtime_budget=runtime_budget,
     ):
         if event.debug_only and not show_debug:
             continue
@@ -362,27 +591,59 @@ def build_ui_chat_answer(
     *,
     base_settings: Settings,
     selected_backend: str,
+    analysis_mode: str | None = None,
+    date_scope: str | None = None,
     selected_profile: str | None,
     date_from: str | None,
     date_to: str | None,
     post_conflict_window_days: int | float | None,
+    include_raw_line_text: bool | None = None,
+    include_raw_note_text: bool | None = None,
+    include_photo_paths: bool | None = None,
+    include_exact_gps: bool | None = None,
+    include_face_crops: bool | None = None,
+    include_face_embeddings: bool | None = None,
+    include_private_file_paths: bool | None = None,
+    include_unverified_person_candidates: bool | None = None,
+    include_unverified_speaker_candidates: bool | None = None,
+    max_runtime: int | float | None = None,
+    max_llm_calls: int | float | None = None,
+    max_batches: int | float | None = None,
     mode: str,
     show_debug: bool = False,
     conversation_state: dict[str, object] | None = None,
 ) -> ChatAnswer:
     question_text = _coerce_message_text(question)
-    settings = _settings_for_ui(base_settings, selected_backend, post_conflict_window_days)
+    settings = _settings_for_ui(
+        base_settings,
+        selected_backend,
+        post_conflict_window_days,
+        analysis_mode=analysis_mode,
+        date_scope=date_scope,
+        include_raw_line_text=include_raw_line_text,
+        include_raw_note_text=include_raw_note_text,
+        include_photo_paths=include_photo_paths,
+        include_exact_gps=include_exact_gps,
+        include_face_crops=include_face_crops,
+        include_face_embeddings=include_face_embeddings,
+        include_private_file_paths=include_private_file_paths,
+        include_unverified_person_candidates=include_unverified_person_candidates,
+        include_unverified_speaker_candidates=include_unverified_speaker_candidates,
+        max_batches=max_batches,
+    )
     profile_id = parse_profile_choice(selected_profile)
+    scoped_date_from, scoped_date_to = _dates_for_scope(date_scope, date_from, date_to)
     response = answer_with_reasoning(
         question_text,
         mode=mode,
         settings=settings,
         selected_profile_id=profile_id,
-        date_from=_clean_text(date_from),
-        date_to=_clean_text(date_to),
+        date_from=scoped_date_from,
+        date_to=scoped_date_to,
         post_conflict_window_days=_safe_window_days(post_conflict_window_days),
         state=conversation_state,
         show_debug=show_debug,
+        runtime_budget=_runtime_budget_from_ui(max_runtime=max_runtime, max_llm_calls=max_llm_calls),
     )
     chat_answer = ChatAnswer(
         text=sanitize_answer(response.answer_markdown, mode=mode),
@@ -453,10 +714,24 @@ def build_ui_answer(
     *,
     base_settings: Settings,
     selected_backend: str,
+    analysis_mode: str | None = None,
+    date_scope: str | None = None,
     selected_profile: str | None,
     date_from: str | None,
     date_to: str | None,
     post_conflict_window_days: int | float | None,
+    include_raw_line_text: bool | None = None,
+    include_raw_note_text: bool | None = None,
+    include_photo_paths: bool | None = None,
+    include_exact_gps: bool | None = None,
+    include_face_crops: bool | None = None,
+    include_face_embeddings: bool | None = None,
+    include_private_file_paths: bool | None = None,
+    include_unverified_person_candidates: bool | None = None,
+    include_unverified_speaker_candidates: bool | None = None,
+    max_runtime: int | float | None = None,
+    max_llm_calls: int | float | None = None,
+    max_batches: int | float | None = None,
     mode: str,
     show_debug: bool = False,
 ) -> str:
@@ -464,10 +739,24 @@ def build_ui_answer(
         question,
         base_settings=base_settings,
         selected_backend=selected_backend,
+        analysis_mode=analysis_mode,
+        date_scope=date_scope,
         selected_profile=selected_profile,
         date_from=date_from,
         date_to=date_to,
         post_conflict_window_days=post_conflict_window_days,
+        include_raw_line_text=include_raw_line_text,
+        include_raw_note_text=include_raw_note_text,
+        include_photo_paths=include_photo_paths,
+        include_exact_gps=include_exact_gps,
+        include_face_crops=include_face_crops,
+        include_face_embeddings=include_face_embeddings,
+        include_private_file_paths=include_private_file_paths,
+        include_unverified_person_candidates=include_unverified_person_candidates,
+        include_unverified_speaker_candidates=include_unverified_speaker_candidates,
+        max_runtime=max_runtime,
+        max_llm_calls=max_llm_calls,
+        max_batches=max_batches,
         mode=mode,
         show_debug=show_debug,
     ).text
@@ -517,7 +806,7 @@ def _progress_chat_message(
     status = "done" if done else "pending"
     return {
         "role": "assistant",
-        "content": _progress_log(events),
+        "content": _progress_log(events, done=done),
         "metadata": {
             "title": "処理プロセス",
             "status": status,
@@ -527,14 +816,14 @@ def _progress_chat_message(
     }
 
 
-def _progress_log(events: list[AgentStreamEvent]) -> str:
+def _progress_log(events: list[AgentStreamEvent], *, done: bool) -> str:
     lines: list[str] = []
     for event in events:
         if not event.safe_for_user:
             continue
         title = _truncate_progress_text(event.title, 80)
         message = _truncate_progress_text(event.message, 180)
-        prefix = "完了" if event.status == "done" else "確認中"
+        prefix = "完了" if done or event.status == "done" else "確認中"
         if event.status == "error":
             prefix = "注意"
         lines.append(f"- {prefix}: {title} - {message}")
@@ -696,12 +985,60 @@ def _settings_for_ui(
     settings: Settings,
     selected_backend: str,
     post_conflict_window_days: int | float | None,
+    *,
+    analysis_mode: str | None = None,
+    date_scope: str | None = None,
+    include_raw_line_text: bool | None = None,
+    include_raw_note_text: bool | None = None,
+    include_photo_paths: bool | None = None,
+    include_exact_gps: bool | None = None,
+    include_face_crops: bool | None = None,
+    include_face_embeddings: bool | None = None,
+    include_private_file_paths: bool | None = None,
+    include_unverified_person_candidates: bool | None = None,
+    include_unverified_speaker_candidates: bool | None = None,
+    max_batches: int | float | None = None,
 ) -> Settings:
     backend = selected_backend if selected_backend in {"mock", "upstream_readonly"} else settings.adapter.backend
+    selected_mode = analysis_mode if analysis_mode in ANALYSIS_MODE_CHOICES else settings.analysis.mode
+    selected_scope = date_scope if date_scope in DATE_SCOPE_CHOICES else settings.analysis.default_scope
     window_days = _safe_window_days(post_conflict_window_days)
+    full_scan = replace(
+        settings.analysis.full_scan,
+        max_batches_per_run=_safe_int(max_batches, settings.analysis.full_scan.max_batches_per_run, minimum=1),
+    )
+    analysis = replace(
+        settings.analysis,
+        mode=selected_mode,
+        default_scope=selected_scope,
+        full_scan=full_scan,
+    )
+    raw_payload = replace(
+        settings.private_full_llm_payload,
+        allow_raw_line_text=_optional_bool(include_raw_line_text, settings.private_full_llm_payload.allow_raw_line_text),
+        allow_raw_note_text=_optional_bool(include_raw_note_text, settings.private_full_llm_payload.allow_raw_note_text),
+        allow_photo_paths=_optional_bool(include_photo_paths, settings.private_full_llm_payload.allow_photo_paths),
+        allow_exact_gps=_optional_bool(include_exact_gps, settings.private_full_llm_payload.allow_exact_gps),
+        allow_face_crops=_optional_bool(include_face_crops, settings.private_full_llm_payload.allow_face_crops),
+        allow_face_embeddings=_optional_bool(include_face_embeddings, settings.private_full_llm_payload.allow_face_embeddings),
+        allow_private_file_paths=_optional_bool(
+            include_private_file_paths,
+            settings.private_full_llm_payload.allow_private_file_paths,
+        ),
+        allow_unverified_person_candidates=_optional_bool(
+            include_unverified_person_candidates,
+            settings.private_full_llm_payload.allow_unverified_person_candidates,
+        ),
+        allow_unverified_speaker_candidates=_optional_bool(
+            include_unverified_speaker_candidates,
+            settings.private_full_llm_payload.allow_unverified_speaker_candidates,
+        ),
+    )
     return replace(
         settings,
         adapter=replace(settings.adapter, backend=backend),
+        analysis=analysis,
+        private_full_llm_payload=raw_payload,
         relationship=replace(settings.relationship, post_conflict_window_days=window_days),
     )
 
@@ -713,6 +1050,55 @@ def _safe_window_days(value: int | float | None) -> int:
         return max(1, int(value))
     except (TypeError, ValueError):
         return 14
+
+
+def _safe_int(value: int | float | None, default: int, *, minimum: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: int | float | None, default: float | None, *, minimum: float = 0.0) -> float | None:
+    if value is None:
+        return default
+    try:
+        return max(minimum, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_bool(value: bool | None, default: bool) -> bool:
+    return default if value is None else bool(value)
+
+
+def _runtime_budget_from_ui(
+    *,
+    max_runtime: int | float | None,
+    max_llm_calls: int | float | None,
+) -> RuntimeBudget | None:
+    if max_runtime is None and max_llm_calls is None:
+        return None
+    return RuntimeBudget(
+        max_runtime_seconds=_safe_float(max_runtime, None, minimum=1.0),
+        max_llm_calls=_safe_int(max_llm_calls, 20, minimum=0),
+    )
+
+
+def _dates_for_scope(date_scope: str | None, date_from: str | None, date_to: str | None) -> tuple[str | None, str | None]:
+    if date_scope in {"auto", "all"}:
+        return None, None
+    return _clean_text(date_from), _clean_text(date_to)
+
+
+def _ui_date_scope(value: str | None) -> str:
+    if value in DATE_SCOPE_CHOICES:
+        return value
+    if value == "ask_llm":
+        return "auto"
+    return "auto"
 
 
 def _clean_text(value: str | None) -> str | None:

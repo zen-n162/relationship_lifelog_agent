@@ -7,7 +7,7 @@ from typing import Any
 from relationship_lifelog_agent.adapters.types import EvidenceItem
 from relationship_lifelog_agent.agent.answerability import AnswerabilityReport, check_answerability
 from relationship_lifelog_agent.agent.answer_composer import compose_answer_with_llm
-from relationship_lifelog_agent.agent.agent_runtime import PRIVATE_FULL_MODES, run_agent, stream_run_agent
+from relationship_lifelog_agent.agent.agent_runtime import PRIVATE_FULL_MODES, RuntimeBudget, run_agent, stream_run_agent
 from relationship_lifelog_agent.agent.conversation_state import ConversationState
 from relationship_lifelog_agent.agent.executor import ReviewTarget, answer_chat
 from relationship_lifelog_agent.agent.information_needs import InformationNeed
@@ -47,6 +47,7 @@ def stream_answer(
     memory: object | None = None,
     show_debug: bool = False,
     llm_client: LocalLlmClient | None = None,
+    runtime_budget: RuntimeBudget | None = None,
 ):
     current_state = ConversationState.from_value(state)
     if settings.analysis.mode in PRIVATE_FULL_MODES:
@@ -58,6 +59,7 @@ def stream_answer(
             date_from=date_from,
             date_to=date_to,
             llm_client=llm_client,
+            budget=runtime_budget,
         )
         return
     usage = LlmUsageTrace.from_settings(settings.llm)
@@ -213,6 +215,7 @@ def answer_with_reasoning(
     memory: object | None = None,
     show_debug: bool = False,
     llm_client: LocalLlmClient | None = None,
+    runtime_budget: RuntimeBudget | None = None,
 ) -> ChatResponse:
     current_state = ConversationState.from_value(state)
     if settings.analysis.mode in PRIVATE_FULL_MODES:
@@ -224,6 +227,7 @@ def answer_with_reasoning(
             date_from=date_from,
             date_to=date_to,
             llm_client=llm_client,
+            budget=runtime_budget,
         )
         return _runtime_response(runtime_run, mode=mode, show_debug=show_debug)
     usage = LlmUsageTrace.from_settings(settings.llm)

@@ -155,6 +155,80 @@ def test_streaming_config_defaults_hide_raw_llm_thinking() -> None:
     assert settings.ui.show_raw_llm_thinking is False
 
 
+def test_chat_ui_stream_handler_passes_private_full_analysis_mode(tmp_path) -> None:
+    settings = _settings_with_profile(tmp_path)
+
+    snapshots = list(
+        build_ui_chat_turn_stream(
+            "いおりとの記録を全体から見て",
+            [],
+            base_settings=settings,
+            selected_backend="mock",
+            analysis_mode="private_full_range",
+            date_scope="custom",
+            selected_profile="1",
+            date_from="2025-01-01",
+            date_to="2025-01-31",
+            post_conflict_window_days=14,
+            include_raw_line_text=True,
+            include_raw_note_text=True,
+            include_photo_paths=True,
+            include_exact_gps=True,
+            include_face_crops=True,
+            include_face_embeddings=True,
+            include_private_file_paths=True,
+            include_unverified_person_candidates=True,
+            include_unverified_speaker_candidates=True,
+            max_runtime=120,
+            max_llm_calls=3,
+            max_batches=5,
+            mode="private",
+            show_debug=False,
+            conversation_state={},
+        )
+    )
+
+    final_history = snapshots[-1][1]
+    assert "Agent Runtime" in final_history[-2]["content"]
+    assert snapshots[-1][5]["last_query_plan"]["runtime"] == "private_full"
+
+
+def test_private_full_stream_progress_is_safe_and_multi_step(tmp_path) -> None:
+    settings = _settings_with_profile(tmp_path)
+
+    snapshots = list(
+        build_ui_chat_turn_stream(
+            "raw LINE全文とraw note全文を出さずに全体を見て",
+            [],
+            base_settings=settings,
+            selected_backend="mock",
+            analysis_mode="private_full_range",
+            date_scope="all",
+            selected_profile="1",
+            date_from="",
+            date_to="",
+            post_conflict_window_days=14,
+            mode="private",
+            show_debug=False,
+            conversation_state={},
+        )
+    )
+
+    progress_messages = [
+        message
+        for message in snapshots[-1][1]
+        if message.get("metadata", {}).get("title") == "処理プロセス"
+    ]
+    assert progress_messages
+    progress_text = progress_messages[-1]["content"]
+    assert "質問を理解しています" in progress_text
+    assert "manifest" in progress_text
+    assert "raw LINE全文" not in progress_text
+    assert "raw note全文" not in progress_text
+    assert "/home/" not in progress_text
+    assert progress_messages[-1]["metadata"]["status"] == "done"
+
+
 def _settings_with_profile(tmp_path, *, llm: LlmSettings | None = None) -> Settings:
     db_path = tmp_path / "relationship.sqlite"
     repo = RelationshipRepository(db_path)

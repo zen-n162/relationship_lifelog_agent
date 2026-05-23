@@ -19,6 +19,9 @@ adapter:
 analysis:
   mode: "safe_window"
   default_scope: "ask_llm"
+  max_runtime_seconds: 300
+  max_llm_calls: 20
+  max_tool_calls: 50
   allow_full_corpus: true
   allow_full_range: true
   allow_single_context_full_prompt: true

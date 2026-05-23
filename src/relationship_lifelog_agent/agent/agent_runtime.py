@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import time
 from typing import Any, Iterable
 from uuid import uuid4
 
@@ -36,24 +37,35 @@ class RuntimeBudget:
     max_steps: int = 50
     max_llm_calls: int = 20
     max_tool_calls: int = 50
+    max_runtime_seconds: float | None = None
+    started_at: float = field(default_factory=time.monotonic)
     used_steps: int = 0
     used_llm_calls: int = 0
     used_tool_calls: int = 0
 
     def consume_step(self) -> "RuntimeBudget":
+        self._check_runtime()
         if self.used_steps >= self.max_steps:
             raise RuntimeBudgetExceeded("max_steps reached")
         return replace(self, used_steps=self.used_steps + 1)
 
     def consume_llm_call(self) -> "RuntimeBudget":
+        self._check_runtime()
         if self.used_llm_calls >= self.max_llm_calls:
             raise RuntimeBudgetExceeded("max_llm_calls reached")
         return replace(self, used_llm_calls=self.used_llm_calls + 1)
 
     def consume_tool_call(self) -> "RuntimeBudget":
+        self._check_runtime()
         if self.used_tool_calls >= self.max_tool_calls:
             raise RuntimeBudgetExceeded("max_tool_calls reached")
         return replace(self, used_tool_calls=self.used_tool_calls + 1)
+
+    def _check_runtime(self) -> None:
+        if self.max_runtime_seconds is None:
+            return
+        if time.monotonic() - self.started_at > self.max_runtime_seconds:
+            raise RuntimeBudgetExceeded("max_runtime reached")
 
 
 @dataclass(frozen=True)
@@ -102,7 +114,12 @@ def run_agent(
         status="running",
         task_graph=private_full_task_graph(),
         observations=ObservationStore(),
-        budget=budget or RuntimeBudget(),
+        budget=budget
+        or RuntimeBudget(
+            max_runtime_seconds=float(config.analysis.max_runtime_seconds),
+            max_llm_calls=config.analysis.max_llm_calls,
+            max_tool_calls=config.analysis.max_tool_calls,
+        ),
         conversation_state=state,
     )
     if config.analysis.mode not in PRIVATE_FULL_MODES:
@@ -169,13 +186,10 @@ def stream_run_agent(
     config: Settings,
     **kwargs: Any,
 ) -> Iterable[AgentStreamEvent]:
-    yield _event("progress", "Agent Runtimeを開始しています", "private full modeのPlan -> Execute -> Observe -> Analyze -> Replan -> Answerを準備します。")
+    for event in _runtime_start_events(config):
+        yield event
     run = run_agent(question, conversation_state, config, **kwargs)
-    for node in run.task_graph.topological_order():
-        if node.status in {"done", "skipped"}:
-            yield _event("tool_done", f"{node.name} が完了しました", node.error or "安全な観測を記録しました。", status="done")
-        elif node.status == "failed":
-            yield _event("error", f"{node.name} が停止しました", node.error or "runtime error", status="error")
+    yield from _runtime_done_events(run)
     yield AgentStreamEvent(
         kind="final_answer",
         title="回答を作成しました",
@@ -188,6 +202,63 @@ def stream_run_agent(
             "debug_info": run.debug_info,
         },
     )
+
+
+def _runtime_start_events(config: Settings) -> tuple[AgentStreamEvent, ...]:
+    mode_message = (
+        f"private full mode: analysis_mode={config.analysis.mode} として、"
+        "Plan -> Execute -> Observe -> Analyze -> Replan -> Answerを実行します。"
+    )
+    return (
+        _event("progress", "質問を理解しています", mode_message),
+        _event("tool_start", "対象範囲の全データを集めています", "上流DBはread-onlyで扱い、progressには件数だけを表示します。"),
+        _event("progress", "manifestを作っています", "source数、日付coverage、推定context量を安全に集計します。"),
+        _event("progress", "contextに入るか確認しています", "llm.num_ctxとmanifestの推定token数からsingle/batchを選びます。"),
+        _event("progress", "batchを作っています", "contextに入らない場合は日付順・source順のbatchへ分割します。"),
+        _event("llm_start", "batch n/mをLLMで分析しています", "local LLMに渡す場合もraw promptやraw payloadはprogressに表示しません。"),
+        _event("progress", "観測結果を統合しています", "batch観測とsource_refを統合して、根拠参照を維持します。"),
+        _event("progress", "追加調査が必要か判断しています", "不足情報やbudget超過があれば安全に停止して案内します。"),
+        _event("progress", "最終回答を検証しています", "source_ref検証とSafety/Privacy Guardを通します。"),
+        _event("progress", "回答を作成しています", "件数・日付・ID対応はPython側の結果を優先します。"),
+    )
+
+
+def _runtime_done_events(run: AgentRun) -> Iterable[AgentStreamEvent]:
+    manifest = run.observations.latest("manifest")
+    batches = run.observations.latest("batches")
+    context_mode = run.observations.latest("context_mode")
+    loaded = run.observations.latest("full_data_loaded")
+    if loaded:
+        data = loaded.data
+        yield _event(
+            "tool_done",
+            "対象範囲の全データを集めました",
+            (
+                f"line={data.get('line_count', 0)}, note={data.get('note_count', 0)}, "
+                f"media={data.get('media_count', 0)}, face={data.get('face_count', 0)}, "
+                f"location={data.get('location_count', 0)}"
+            ),
+            status="done",
+        )
+    if manifest:
+        yield _event(
+            "progress",
+            "manifestを作りました",
+            f"estimated_tokens={manifest.data.get('estimated_tokens', 0)}, line_count={manifest.data.get('line_count', 0)}",
+            status="done",
+        )
+    if context_mode:
+        yield _event("progress", "context判定が完了しました", f"context_mode={context_mode.summary}", status="done")
+    if batches:
+        batch_count = int(batches.data.get("batch_count", 0) or 0)
+        yield _event("progress", "batch作成が完了しました", f"batch_count={batch_count}", status="done")
+        if batch_count:
+            yield _event("llm_done", f"batch {batch_count}/{batch_count}をLLMで分析しました", "structured resultだけを保持します。", status="done")
+    if run.stop_reason:
+        yield _event("warning", "Agent Runtimeが途中停止しました", run.stop_reason, status="done")
+    else:
+        yield _event("progress", "追加調査の判断が完了しました", "このrunでは追加taskなしで回答へ進みました。", status="done")
+    yield _event("progress", "最終回答の検証が完了しました", "raw promptやraw payloadは表示していません。", status="done")
 
 
 def _execute_task(run: AgentRun, node: TaskNode, context: dict[str, Any]) -> tuple[AgentRun, dict[str, Any]]:
@@ -324,6 +395,7 @@ def _finish_run(run: AgentRun, context: dict[str, Any]) -> AgentRun:
         "status": run.status,
         "stop_reason": run.stop_reason,
         "budget": {
+            "max_runtime_seconds": run.budget.max_runtime_seconds,
             "max_steps": run.budget.max_steps,
             "used_steps": run.budget.used_steps,
             "max_llm_calls": run.budget.max_llm_calls,
