@@ -4,6 +4,12 @@ Local-first, privacy-first Relationship Lifelog Agent.
 
 This MVP is a relationship evidence review assistant, not a relationship judgment AI. It uses mock adapters by default, and can opt into read-only SQLite adapters for `personal_lifelog_rag` and `notes_lifelog_rag` without modifying those upstream apps.
 
+The project direction is a Private Full-Corpus Personal Memory Agent: a local
+agent that can plan, execute, observe, analyze, replan, and answer questions a
+human could answer by carefully investigating the user's private local corpus.
+The current implementation is the conservative `safe_window` path; future
+private full modes will add explicit user-approved range and corpus analysis.
+
 ## Safety Defaults
 
 - External APIs are disabled.
@@ -96,7 +102,7 @@ a failed read-only upstream DB connection. Keep `config.local.yaml` out of git.
 
 The Conversation-aware Planning Agent can optionally call a local Ollama model
 for question understanding, information-need suggestions, query-plan drafting,
-and answer phrasing. This is opt-in only. The app still keeps profile
+window analysis, and answer phrasing. This is opt-in only. The app still keeps profile
 resolution, identity links, counts, dates, reply-delay metrics, evidence
 evaluation, and privacy redaction in Python/SQL. If the local LLM fails or
 returns invalid JSON, the rule-based fallback remains active.
@@ -128,6 +134,34 @@ python -m relationship_lifelog_agent.cli --config config.local.yaml llm status -
 In Chat UI debug mode, answers include an LLM usage trace showing which stages
 used `llm` versus `rule`/`template`, call count, fallback reasons, structured
 output status, and latency.
+
+## Analysis Modes
+
+The target architecture defines three analysis modes:
+
+- `safe_window`: the default current behavior. Python/SQL selects small
+  candidate windows, local Ollama may analyze short excerpts and safe metadata,
+  and raw full payload is not sent to the LLM.
+- `private_full_range`: an explicit private mode for a user-approved date range.
+  Depending on raw-payload policy toggles, local Ollama may receive raw LINE
+  text, raw note bodies, photo paths, exact GPS, face crop paths, face
+  embeddings, private file paths, and unverified person/speaker candidates.
+- `private_full_corpus`: an explicit private mode for the full local corpus.
+  It requires batching, runtime budgets, source refs, resumable observations,
+  and final source-ref verification.
+
+Private full modes do not change the external safety boundary: external APIs and
+cloud LLMs remain forbidden, model auto-download remains forbidden, Ollama must
+be local, raw prompt logging defaults to false, raw payload caching defaults to
+false, and public mode keeps the existing redaction behavior.
+
+The planned full-agent runtime is:
+
+```text
+Plan -> Execute -> Observe -> Analyze -> Replan -> Answer
+```
+
+See `docs/private_full_agent_plan.md` for the migration plan.
 
 ## Upstream Schema Inspection
 
@@ -303,6 +337,9 @@ extracted candidates.
 - Rule-based Japanese intent routing.
 - Mock personal and notes lifelog adapters.
 - Opt-in `upstream_readonly` adapters that return source pointers and short controlled excerpts.
+- A `safe_window` analysis path that keeps raw full payload out of LLM prompts.
+- A documented migration plan for explicit `private_full_range` and
+  `private_full_corpus` local-Ollama analysis modes.
 - Manual `relationship_profiles` management from the CLI and UI settings.
 - Chat UI backend/profile/date-range selection with safe fallback when upstream
   adapters or profiles are not configured.

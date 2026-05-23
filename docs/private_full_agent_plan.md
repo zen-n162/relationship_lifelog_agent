@@ -522,6 +522,14 @@ Update:
 - `docs/application_overview.html`
 - `docs/ADAPTER_CONTRACT.md`
 
+Status:
+
+- `AGENTS.md`, `README.md`, and `docs/application_overview.html` now describe
+  the Private Full-Corpus direction, analysis modes, local-only constraints, raw
+  payload defaults, and source-ref verification requirement.
+- `docs/ADAPTER_CONTRACT.md` should be updated when the first private full data
+  access interfaces are implemented.
+
 Main change:
 
 - The current guidance says local LLM should not receive the entire LINE log or

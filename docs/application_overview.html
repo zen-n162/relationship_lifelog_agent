@@ -279,7 +279,8 @@
       <h1>Relationship Lifelog Agent</h1>
       <p class="lead">
         Relationship Lifelog Agentは、既存のローカルlifelogアプリを上流の記憶ツールとして扱い、
-        関係にまつわる記録を慎重に整理するためのローカル専用アプリケーションです。
+        写真・LINE・メモをもとに、人間が調べれば答えられる質問へ可能な限り答える
+        Private Full-Corpus Personal Memory Agentを目指すローカル専用アプリケーションです。
         関係を断定・診断するAIではなく、観測できる根拠を集めて見直すためのレビュー支援ツールです。
       </p>
       <div class="badge-row" aria-label="安全性と実行条件">
@@ -289,6 +290,8 @@
         <span class="badge">Gradio UI</span>
         <span class="badge">Manual profiles</span>
         <span class="badge">Safety evals</span>
+        <span class="badge">safe_window</span>
+        <span class="badge">private full plan</span>
         <span class="badge">No external APIs</span>
         <span class="badge">share=False</span>
       </div>
@@ -311,6 +314,14 @@
             標準ではmock adapterを使い、必要に応じて<code>upstream_readonly</code>で
             LINE候補、外出候補、メモ候補、月次振り返り候補をread-only取得します。
             上流アプリのDBは更新しません。
+          </p>
+        </article>
+        <article class="card">
+          <h3>分析modeを分ける</h3>
+          <p>
+            現在の安全な経路は<code>safe_window</code>です。今後は明示許可された
+            <code>private_full_range</code>と<code>private_full_corpus</code>で、
+            指定範囲または全範囲のprivate corpusをlocal Ollamaでbatch分析できる構造へ拡張します。
           </p>
         </article>
         <article class="card">
@@ -337,6 +348,15 @@
             根拠filtering、集計、安全checkを段階的に表示します。
             これらは1つの処理プロセス枠にまとめ、最終回答後は回答の後ろに完了状態の折りたたみ表示として収納します。
             表示するのはsafe progress summaryであり、raw chain-of-thoughtやraw promptではありません。
+          </p>
+        </article>
+        <article class="card">
+          <h3>private full payloadを扱う</h3>
+          <p>
+            private full modeでは、ユーザー許可とローカル実行を前提に、raw LINE text、
+            raw note body、photo path、exact GPS、face crop path、face embedding、
+            private file path、未確認person/speaker候補をLLM payloadへ含められる設計にします。
+            raw prompt loggingとraw payload cacheはデフォルトfalseです。
           </p>
         </article>
         <article class="card">
@@ -462,26 +482,33 @@
         <div class="flow-step">
           <span class="num">5</span>
           <div>
-            <strong>Analytics / Answer composer</strong>
-            <p>件数や日付を決定的に集計し、要約、集計、具体例、根拠、信頼度、注意を含む日本語回答を作ります。通常回答の根拠は最大5件に制限し、private modeでもexcerptを短くします。</p>
+            <strong>Agent runtime direction</strong>
+            <p>private full modeでは、Plan -> Execute -> Observe -> Analyze -> Replan -> Answerのループを中核にします。contextに入らない場合はsource_refを保ったままbatch化し、観測結果を統合して再計画します。</p>
           </div>
         </div>
         <div class="flow-step">
           <span class="num">6</span>
           <div>
-            <strong>Privacy guard</strong>
-            <p>回答後に禁止表現やpublic modeで出してはいけない情報を検査・匿名化します。</p>
+            <strong>Analytics / Answer composer</strong>
+            <p>件数や日付を決定的に集計し、要約、集計、具体例、根拠、信頼度、注意を含む日本語回答を作ります。通常回答の根拠は最大5件に制限し、private modeでもexcerptを短くします。</p>
           </div>
         </div>
         <div class="flow-step">
           <span class="num">7</span>
+          <div>
+            <strong>Source-ref verification / Privacy guard</strong>
+            <p>回答後にsource_ref、日付範囲、Python集計との一致、禁止表現、public modeで出してはいけない情報を検査・匿名化します。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">8</span>
           <div>
             <strong>Conversation state</strong>
             <p>active profile、直前intent、date range、observed dates、review targets、query plan、answerability reportをGradio session stateに保存し、省略質問の補完に使います。</p>
           </div>
         </div>
         <div class="flow-step">
-          <span class="num">8</span>
+          <span class="num">9</span>
           <div>
             <strong>Review action</strong>
             <p>回答にrelationship DB由来のcandidateが含まれる場合、最小Review accordionからverify、reject、mark_as_misunderstandingなどを保存できます。上流データや元sourceは変更しません。</p>
@@ -510,7 +537,7 @@
             <tr>
               <td><code>agent/</code></td>
               <td>会話理解、profile解決、回答可能性判定、計画、実行、回答生成を担当します。</td>
-              <td>ConversationState、QuestionFrame、ProfileResolver、AnswerabilityReport、InformationNeed、Evidence Contract、Tool Registry、Reasoning Orchestratorを実装済みです。LLMなしで動き、設定済みのlocal OllamaはQuestionFrame、必要情報、QueryPlan、回答文整形の補助に限定します。</td>
+              <td>ConversationState、QuestionFrame、ProfileResolver、AnswerabilityReport、InformationNeed、Evidence Contract、Tool Registry、Reasoning Orchestratorを実装済みです。今後はprivate full mode用のruntime loopを追加し、Plan -> Execute -> Observe -> Analyze -> Replan -> Answerを中核にします。</td>
             </tr>
             <tr>
               <td><code>analytics/</code></td>
@@ -565,7 +592,12 @@
             <tr>
               <td><code>analytics/llm_*_window.py</code></td>
               <td>小さなwindowだけをlocal LLMで補助分析します。</td>
-              <td>LINE window、date-near note、日別media metadataをJSON構造で分析します。件数・日付・profile確定・ID対応・redactionはPython側で検証し、raw LINE全文、raw note全文、写真パス、正確GPS、顔情報は渡しません。</td>
+              <td><code>safe_window</code>用に、LINE window、date-near note、日別media metadataをJSON構造で分析します。件数・日付・profile確定・ID対応・redactionはPython側で検証し、safe_windowではraw LINE全文、raw note全文、写真パス、正確GPS、顔情報は渡しません。</td>
+            </tr>
+            <tr>
+              <td><code>full_context/</code></td>
+              <td>private full mode用の全範囲/全コーパス分析レイヤーです。</td>
+              <td>計画中です。FullDataManifest、ContextBudgeter、BatchBuilder、PromptPacker、FullRangeLlmAnalyzer、ObservationStore、SourceRefVerifierを追加し、raw payloadはlocal Ollamaへの明示許可payloadに限定します。</td>
             </tr>
           </tbody>
         </table>
@@ -581,6 +613,8 @@
         <li>外部API、cloud upload、モデル自動ダウンロードは使いません。</li>
         <li>Gradioは<code>127.0.0.1</code>で起動し、<code>share=True</code>は禁止です。</li>
         <li>public modeでは実人物名、恋人ラベル、LINE全文、メモ全文、正確GPS、顔crop、実写真、private pathを出しません。</li>
+        <li>private full modeではraw dataをlocal LLM payloadに含められますが、debug logやDB cacheにraw payloadを保存しない設定をデフォルトにします。</li>
+        <li>LLM出力はschema validateし、tool planはallowed tool whitelistで検証します。件数・日付・ID検証はPython/SQLが最終責任を持ちます。</li>
       </ul>
       <div class="callout ok">
         重要な設計原則: relationship judgment AIではなく、relationship evidence review AIとして振る舞います。
@@ -597,6 +631,7 @@
         <li><code>interaction_metrics</code>: メッセージ数、返信遅延、沈黙期間などの観測指標</li>
         <li><code>post_conflict_activities</code>: 喧嘩候補後の外出・活動候補</li>
         <li><code>relationship_review_actions</code>: verify、reject、correctなどの人間レビュー操作</li>
+        <li><code>full_analysis_runs</code> / <code>full_analysis_batches</code> / <code>full_analysis_observations</code>: private full mode用に計画中のrun、batch、観測結果。raw payloadではなくsource ref、hash、manifest、structured resultを保存する方針です。</li>
       </ul>
     </section>
 
