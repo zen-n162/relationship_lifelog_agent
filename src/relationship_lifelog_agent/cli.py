@@ -393,6 +393,20 @@ def _full_context_main(argv: list[str]) -> None:
             raise SystemExit(str(exc)) from exc
         _print_full_context_analysis_result(synthesis)
         return
+    if args.full_context_command == "runs":
+        repo = RelationshipRepository(settings.paths.relationship_db)
+        if args.runs_command == "list":
+            runs = repo.list_full_analysis_runs(limit=args.limit)
+            _print_full_context_runs(runs)
+            return
+        if args.runs_command == "show":
+            run = repo.get_full_analysis_run(args.id)
+            if run is None:
+                raise SystemExit(f"full analysis run not found: {args.id}")
+            batches = repo.list_full_analysis_batches(run_id=args.id)
+            observations = repo.list_full_analysis_observations(run_id=args.id)
+            _print_full_context_run(run, batches, observations)
+            return
     parser.error("unknown full-context command")
 
 
@@ -552,6 +566,12 @@ def _build_full_context_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--question", required=True)
     analyze.add_argument("--dry-run", choices=("true", "false"), default="true")
     analyze.add_argument("--max-llm-calls", type=int, default=5)
+    runs = full_context_sub.add_parser("runs", help="Inspect saved full analysis runs without raw payload output.")
+    runs_sub = runs.add_subparsers(dest="runs_command", required=True)
+    runs_list = runs_sub.add_parser("list", help="List saved full analysis runs.")
+    runs_list.add_argument("--limit", type=int, default=50)
+    runs_show = runs_sub.add_parser("show", help="Show one saved full analysis run.")
+    runs_show.add_argument("--id", required=True, type=int)
     return parser
 
 
@@ -800,6 +820,48 @@ def _print_full_context_analysis_result(synthesis: Any) -> None:
             print(f"- caution: {item}")
     print("answer:")
     print(synthesis.answer)
+
+
+def _print_full_context_runs(runs: list[dict[str, Any]]) -> None:
+    if not runs:
+        print("no full analysis runs")
+        return
+    print("id\tstatus\tanalysis_mode\tprofile_id\tdate_from\tdate_to\tmodel_name\tcreated_at")
+    for run in runs:
+        print(
+            "\t".join(
+                _display(run.get(key))
+                for key in (
+                    "id",
+                    "status",
+                    "analysis_mode",
+                    "profile_id",
+                    "date_from",
+                    "date_to",
+                    "model_name",
+                    "created_at",
+                )
+            )
+        )
+
+
+def _print_full_context_run(
+    run: dict[str, Any],
+    batches: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+) -> None:
+    print(f"id: {_display(run.get('id'))}")
+    print(f"question: {_display(run.get('question'))}")
+    print(f"analysis_mode: {_display(run.get('analysis_mode'))}")
+    print(f"profile_id: {_display(run.get('profile_id'))}")
+    print(f"date_range: {_display(run.get('date_from'))}..{_display(run.get('date_to'))}")
+    print(f"status: {_display(run.get('status'))}")
+    print(f"model_name: {_display(run.get('model_name'))}")
+    manifest = run.get("manifest") if isinstance(run.get("manifest"), dict) else {}
+    print(f"manifest_keys: {', '.join(sorted(manifest)) if manifest else 'none'}")
+    print(f"final_synthesis_present: {str(bool(run.get('final_synthesis'))).lower()}")
+    print(f"batch_count: {len(batches)}")
+    print(f"observation_count: {len(observations)}")
 
 
 if __name__ == "__main__":

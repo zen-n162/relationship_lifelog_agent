@@ -19,6 +19,37 @@ ALLOWED_RELATIONSHIP_LABELS = frozenset({"partner", "ex_partner", "close_person"
 MANUAL_LABEL_SOURCE = "user_manual"
 ALLOWED_EVENT_STATUSES = frozenset({"candidate", "hidden", "archived"})
 ALLOWED_REVIEW_STATUSES = frozenset({"unreviewed", "verified", "corrected", "needs_reanalysis", "rejected"})
+ALLOWED_FULL_ANALYSIS_MODES = frozenset({"private_full_range", "private_full_corpus"})
+ALLOWED_FULL_RUN_STATUSES = frozenset({"pending", "running", "succeeded", "failed", "cancelled"})
+ALLOWED_FULL_BATCH_STATUSES = frozenset({"pending", "running", "succeeded", "failed", "skipped"})
+FORBIDDEN_RAW_JSON_KEYS = frozenset(
+    {
+        "raw_prompt",
+        "prompt_text",
+        "raw_payload",
+        "raw_line_text",
+        "raw_note_text",
+        "raw_text",
+        "raw_body",
+        "line_full_text",
+        "note_full_text",
+        "exact_gps",
+        "photo_path",
+        "photo_paths",
+        "file_path",
+        "thumbnail_path",
+        "source_path",
+        "private_path",
+        "private_file_path",
+        "face_crop",
+        "face_crop_path",
+        "face_crop_paths",
+        "embedding",
+        "face_embedding",
+        "face_embeddings",
+        "raw_face_embedding_values",
+    }
+)
 
 
 class RelationshipRepository:
@@ -479,6 +510,250 @@ class RelationshipRepository:
     def delete_review_action(self, action_id: int) -> int:
         return self._delete("relationship_review_actions", action_id)
 
+    # full_analysis_runs / full_analysis_batches / full_analysis_observations
+
+    def create_full_analysis_run(
+        self,
+        *,
+        question: str,
+        analysis_mode: str,
+        profile_id: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        status: str = "pending",
+        model_name: str | None = None,
+        manifest: Mapping[str, Any] | None = None,
+        final_synthesis: Mapping[str, Any] | None = None,
+    ) -> int:
+        values = {
+            "question": question,
+            "analysis_mode": _normalize_full_analysis_mode(analysis_mode),
+            "profile_id": profile_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "status": _normalize_full_run_status(status),
+            "model_name": model_name,
+            "manifest_json": _json_dumps_structured(manifest or {}),
+            "final_synthesis_json": (
+                _json_dumps_structured(final_synthesis) if final_synthesis is not None else None
+            ),
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "full_analysis_runs", values)
+
+    def get_full_analysis_run(self, run_id: int) -> RowDict | None:
+        row = self._get_by_id("full_analysis_runs", run_id)
+        if row:
+            _decode_json_fields(row, ("manifest_json", "final_synthesis_json"))
+        return row
+
+    def list_full_analysis_runs(
+        self,
+        *,
+        profile_id: int | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[RowDict]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if profile_id is not None:
+            clauses.append("profile_id = ?")
+            params.append(profile_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(_normalize_full_run_status(status))
+        rows = self._select_many("full_analysis_runs", clauses, params, order_by="id DESC", limit=limit)
+        for row in rows:
+            _decode_json_fields(row, ("manifest_json", "final_synthesis_json"))
+        return rows
+
+    def update_full_analysis_run(self, run_id: int, **fields: Any) -> int:
+        allowed = {
+            "question",
+            "analysis_mode",
+            "profile_id",
+            "date_from",
+            "date_to",
+            "status",
+            "model_name",
+            "manifest",
+            "final_synthesis",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unsupported fields for full_analysis_runs: {names}")
+        db_fields: dict[str, Any] = {}
+        for key, value in fields.items():
+            if key == "analysis_mode":
+                db_fields["analysis_mode"] = _normalize_full_analysis_mode(value)
+            elif key == "status":
+                db_fields["status"] = _normalize_full_run_status(value)
+            elif key == "manifest":
+                db_fields["manifest_json"] = _json_dumps_structured(value or {})
+            elif key == "final_synthesis":
+                db_fields["final_synthesis_json"] = _json_dumps_structured(value or {})
+            else:
+                db_fields[key] = value
+        return self._update(
+            "full_analysis_runs",
+            run_id,
+            {
+                "question",
+                "analysis_mode",
+                "profile_id",
+                "date_from",
+                "date_to",
+                "status",
+                "model_name",
+                "manifest_json",
+                "final_synthesis_json",
+            },
+            db_fields,
+        )
+
+    def create_full_analysis_batch(
+        self,
+        *,
+        run_id: int,
+        batch_index: int,
+        input_hash: str,
+        source_types: list[str] | tuple[str, ...] = (),
+        date_from: str | None = None,
+        date_to: str | None = None,
+        item_count: int = 0,
+        source_refs: list[str] | tuple[str, ...] = (),
+        output: Mapping[str, Any] | None = None,
+        status: str = "pending",
+    ) -> int:
+        values = {
+            "run_id": run_id,
+            "batch_index": batch_index,
+            "source_types": _json_dumps_structured(list(source_types), allow_arrays=True),
+            "date_from": date_from,
+            "date_to": date_to,
+            "item_count": item_count,
+            "source_refs_json": _json_dumps_structured(list(source_refs), allow_arrays=True),
+            "input_hash": input_hash,
+            "output_json": _json_dumps_structured(output) if output is not None else None,
+            "status": _normalize_full_batch_status(status),
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "full_analysis_batches", values)
+
+    def get_full_analysis_batch(self, batch_id: int) -> RowDict | None:
+        row = self._get_by_id("full_analysis_batches", batch_id)
+        if row:
+            _decode_json_fields(row, ("source_types", "source_refs_json", "output_json"))
+        return row
+
+    def list_full_analysis_batches(self, *, run_id: int, limit: int = 500) -> list[RowDict]:
+        rows = self._select_many(
+            "full_analysis_batches",
+            ["run_id = ?"],
+            [run_id],
+            order_by="batch_index, id",
+            limit=limit,
+        )
+        for row in rows:
+            _decode_json_fields(row, ("source_types", "source_refs_json", "output_json"))
+        return rows
+
+    def update_full_analysis_batch(self, batch_id: int, **fields: Any) -> int:
+        allowed = {
+            "source_types",
+            "date_from",
+            "date_to",
+            "item_count",
+            "source_refs",
+            "input_hash",
+            "output",
+            "status",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise ValueError(f"Unsupported fields for full_analysis_batches: {names}")
+        db_fields: dict[str, Any] = {}
+        for key, value in fields.items():
+            if key == "source_types":
+                db_fields["source_types"] = _json_dumps_structured(list(value or ()), allow_arrays=True)
+            elif key == "source_refs":
+                db_fields["source_refs_json"] = _json_dumps_structured(list(value or ()), allow_arrays=True)
+            elif key == "output":
+                db_fields["output_json"] = _json_dumps_structured(value or {})
+            elif key == "status":
+                db_fields["status"] = _normalize_full_batch_status(value)
+            else:
+                db_fields[key] = value
+        return self._update(
+            "full_analysis_batches",
+            batch_id,
+            {
+                "source_types",
+                "date_from",
+                "date_to",
+                "item_count",
+                "source_refs_json",
+                "input_hash",
+                "output_json",
+                "status",
+            },
+            db_fields,
+        )
+
+    def create_full_analysis_observation(
+        self,
+        *,
+        run_id: int,
+        observation_type: str,
+        summary: str,
+        batch_id: int | None = None,
+        source_refs: list[str] | tuple[str, ...] = (),
+        result: Mapping[str, Any] | None = None,
+        confidence: float = 0.5,
+    ) -> int:
+        values = {
+            "run_id": run_id,
+            "batch_id": batch_id,
+            "observation_type": observation_type,
+            "summary": summary,
+            "source_refs_json": _json_dumps_structured(list(source_refs), allow_arrays=True),
+            "result_json": _json_dumps_structured(result or {}),
+            "confidence": confidence,
+        }
+        with self.connect() as conn:
+            return self._insert(conn, "full_analysis_observations", values)
+
+    def get_full_analysis_observation(self, observation_id: int) -> RowDict | None:
+        row = self._get_by_id("full_analysis_observations", observation_id)
+        if row:
+            _decode_json_fields(row, ("source_refs_json", "result_json"))
+        return row
+
+    def list_full_analysis_observations(
+        self,
+        *,
+        run_id: int,
+        batch_id: int | None = None,
+        limit: int = 500,
+    ) -> list[RowDict]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [run_id]
+        if batch_id is not None:
+            clauses.append("batch_id = ?")
+            params.append(batch_id)
+        rows = self._select_many(
+            "full_analysis_observations",
+            clauses,
+            params,
+            order_by="id",
+            limit=limit,
+        )
+        for row in rows:
+            _decode_json_fields(row, ("source_refs_json", "result_json"))
+        return rows
+
     # llm_analysis_cache
 
     def get_llm_analysis_cache(
@@ -525,7 +800,7 @@ class RelationshipRepository:
             "source_window_hash": source_window_hash,
             "model_name": model_name,
             "prompt_version": prompt_version,
-            "result_json": json.dumps(dict(result), ensure_ascii=False, sort_keys=True),
+            "result_json": _json_dumps_structured(result),
             "confidence": confidence,
         }
         with self.connect() as conn:
@@ -645,3 +920,61 @@ def _normalize_review_status(value: object) -> str:
         allowed = ", ".join(sorted(ALLOWED_REVIEW_STATUSES))
         raise ValueError(f"review_status must be one of: {allowed}")
     return str(value)
+
+
+def _normalize_full_analysis_mode(value: object) -> str:
+    if value not in ALLOWED_FULL_ANALYSIS_MODES:
+        allowed = ", ".join(sorted(ALLOWED_FULL_ANALYSIS_MODES))
+        raise ValueError(f"analysis_mode must be one of: {allowed}")
+    return str(value)
+
+
+def _normalize_full_run_status(value: object) -> str:
+    if value not in ALLOWED_FULL_RUN_STATUSES:
+        allowed = ", ".join(sorted(ALLOWED_FULL_RUN_STATUSES))
+        raise ValueError(f"full analysis run status must be one of: {allowed}")
+    return str(value)
+
+
+def _normalize_full_batch_status(value: object) -> str:
+    if value not in ALLOWED_FULL_BATCH_STATUSES:
+        allowed = ", ".join(sorted(ALLOWED_FULL_BATCH_STATUSES))
+        raise ValueError(f"full analysis batch status must be one of: {allowed}")
+    return str(value)
+
+
+def _json_dumps_structured(value: Mapping[str, Any] | list[Any] | tuple[Any, ...], *, allow_arrays: bool = False) -> str:
+    if not isinstance(value, Mapping) and not allow_arrays:
+        raise ValueError("structured JSON payload must be an object")
+    _assert_no_raw_payload(value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _assert_no_raw_payload(value: Any, *, path: str = "") -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key)
+            next_path = f"{path}.{key_text}" if path else key_text
+            if key_text in FORBIDDEN_RAW_JSON_KEYS:
+                raise ValueError(f"raw payload field is not allowed in relationship DB: {next_path}")
+            _assert_no_raw_payload(item, path=next_path)
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_no_raw_payload(item, path=f"{path}[{index}]")
+
+
+def _decode_json_fields(row: RowDict, fields: tuple[str, ...]) -> None:
+    for field in fields:
+        value = row.get(field)
+        if value is None:
+            row[field.removesuffix("_json")] = None
+            continue
+        try:
+            decoded = json.loads(str(value))
+        except json.JSONDecodeError:
+            decoded = {} if not str(value).strip().startswith("[") else []
+        if field.endswith("_json"):
+            row[field.removesuffix("_json")] = decoded
+        else:
+            row[field] = decoded

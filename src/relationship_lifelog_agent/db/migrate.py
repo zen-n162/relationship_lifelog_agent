@@ -46,6 +46,8 @@ def _ensure_updated_at_columns(conn: sqlite3.Connection) -> None:
         "interaction_metrics",
         "post_conflict_activities",
         "relationship_review_actions",
+        "full_analysis_runs",
+        "full_analysis_batches",
         "llm_analysis_cache",
     )
     for table in tables:

@@ -159,6 +159,59 @@ CREATE TABLE IF NOT EXISTS relationship_review_actions (
   ))
 );
 
+CREATE TABLE IF NOT EXISTS full_analysis_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  question TEXT NOT NULL,
+  analysis_mode TEXT NOT NULL,
+  profile_id INTEGER,
+  date_from TEXT,
+  date_to TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  model_name TEXT,
+  manifest_json TEXT NOT NULL DEFAULT '{}',
+  final_synthesis_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES relationship_profiles(id) ON DELETE SET NULL,
+  CHECK (analysis_mode IN ('private_full_range', 'private_full_corpus')),
+  CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled'))
+);
+
+CREATE TABLE IF NOT EXISTS full_analysis_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  batch_index INTEGER NOT NULL,
+  source_types TEXT NOT NULL DEFAULT '[]',
+  date_from TEXT,
+  date_to TEXT,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  source_refs_json TEXT NOT NULL DEFAULT '[]',
+  input_hash TEXT NOT NULL,
+  output_json TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (run_id) REFERENCES full_analysis_runs(id) ON DELETE CASCADE,
+  UNIQUE (run_id, batch_index),
+  CHECK (item_count >= 0),
+  CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'skipped'))
+);
+
+CREATE TABLE IF NOT EXISTS full_analysis_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  batch_id INTEGER,
+  observation_type TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  source_refs_json TEXT NOT NULL DEFAULT '[]',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (run_id) REFERENCES full_analysis_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY (batch_id) REFERENCES full_analysis_batches(id) ON DELETE SET NULL,
+  CHECK (confidence >= 0.0 AND confidence <= 1.0)
+);
+
 CREATE TABLE IF NOT EXISTS llm_analysis_cache (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   analysis_type TEXT NOT NULL,
@@ -213,6 +266,20 @@ AFTER UPDATE ON relationship_review_actions
 WHEN NEW.updated_at = OLD.updated_at
 BEGIN
   UPDATE relationship_review_actions SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_analysis_runs_set_updated_at
+AFTER UPDATE ON full_analysis_runs
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE full_analysis_runs SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS full_analysis_batches_set_updated_at
+AFTER UPDATE ON full_analysis_batches
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE full_analysis_batches SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS llm_analysis_cache_set_updated_at

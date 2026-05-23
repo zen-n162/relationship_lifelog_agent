@@ -218,6 +218,17 @@ configured. The analyzer requires structured JSON output, validates it with
 Pydantic schemas, preserves `source_ref`, and falls back to a cautious
 structured result if JSON validation fails.
 
+Saved full analysis runs can be inspected without raw payload output:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context runs list
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context runs show --id 1
+```
+
+The relationship DB stores run manifests, batch source refs and hashes,
+structured observations, and final synthesis JSON. Raw prompts and raw payloads
+are not stored by default.
+
 ## Upstream Schema Inspection
 
 Use schema inspection to check whether the upstream SQLite tables and columns

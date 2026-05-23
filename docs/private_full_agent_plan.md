@@ -771,6 +771,18 @@ Keep or extend:
 
 - `llm_analysis_cache`
 
+Status: implemented. The schema now includes full analysis runs, batches,
+observations, and the existing unique LLM analysis cache. Repository APIs create
+and list runs/batches/observations and reject raw prompt/payload fields in
+structured JSON by default.
+
+CLI:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context runs list
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context runs show --id 1
+```
+
 Rules:
 
 - store manifest JSON, source refs, hashes, structured results, and summaries

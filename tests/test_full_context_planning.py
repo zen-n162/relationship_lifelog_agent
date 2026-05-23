@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from relationship_lifelog_agent.cli import main as cli_main
 from relationship_lifelog_agent.config import LlmSettings
+from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.full_context.batch_builder import (
     build_chronological_batches,
     build_hybrid_batches,
@@ -273,3 +274,35 @@ def test_full_context_analyze_dry_run_does_not_call_llm(capsys) -> None:
     assert "Full Context Analyze Dry Run" in output
     assert "llm_calls: 0" in output
     assert "local LLM was not called" in output
+
+
+def test_full_context_runs_list_and_show_cli(tmp_path, capsys) -> None:
+    db_path = tmp_path / "relationship.sqlite"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+paths:
+  relationship_db: "{db_path}"
+""",
+        encoding="utf-8",
+    )
+    repo = RelationshipRepository(db_path)
+    run_id = repo.create_full_analysis_run(
+        question="この期間に何があった？",
+        analysis_mode="private_full_range",
+        date_from="2025-01-01",
+        date_to="2025-01-02",
+        manifest={"line_count": 0},
+    )
+
+    cli_main(["--config", str(config_path), "full-context", "runs", "list"])
+    list_output = capsys.readouterr().out
+    assert "id\tstatus\tanalysis_mode" in list_output
+    assert str(run_id) in list_output
+    assert "private_full_range" in list_output
+
+    cli_main(["--config", str(config_path), "full-context", "runs", "show", "--id", str(run_id)])
+    show_output = capsys.readouterr().out
+    assert f"id: {run_id}" in show_output
+    assert "manifest_keys: line_count" in show_output
+    assert "batch_count: 0" in show_output
