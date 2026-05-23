@@ -641,7 +641,12 @@ Tests:
 
 ### Phase 4: Manifest, Budget, And Batch Builder
 
-Create:
+Status: implemented as a planning layer. It accepts already-loaded
+`Full*Item` objects, builds a manifest, estimates context budget, and creates
+source-ref-preserving batches. The read-only full data access loader remains a
+separate phase.
+
+Implemented:
 
 - `full_context/manifest.py`
 - `full_context/context_budget.py`
@@ -663,6 +668,19 @@ Tests:
 - batch source-ref coverage
 - overlap behavior
 - max batch constraints
+
+CLI:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context plan \
+  --profile-id 1 \
+  --date-from 2024-12-01 \
+  --date-to 2024-12-31
+```
+
+The command currently emits a safe plan summary without loading raw upstream
+data. After Phase 3 data access is connected, this command should use the
+read-only loader output as its item set.
 
 ### Phase 5: Prompt Packer
 

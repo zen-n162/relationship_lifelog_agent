@@ -167,6 +167,24 @@ The config layer already accepts `analysis`, `private_full_llm_payload`,
 `llm.num_ctx`, and `vision` sections. These are scaffolding for future private
 full runtime work; the app still defaults to `safe_window`.
 
+## Full Context Planning
+
+Before running private full analysis, build a manifest and context budget plan.
+This command currently plans from the provided full-context item set; the
+read-only full data loader is added in a later phase. It does not print raw
+LINE text, note bodies, exact GPS, face data, photo paths, or private paths.
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context plan \
+  --profile-id 1 \
+  --date-from 2024-12-01 \
+  --date-to 2024-12-31
+```
+
+The output includes manifest counts, date coverage, estimated tokens/chars,
+`single_context` versus `iterative_full_scan`, batch strategy, batch count, and
+source-ref coverage status.
+
 ## Upstream Schema Inspection
 
 Use schema inspection to check whether the upstream SQLite tables and columns

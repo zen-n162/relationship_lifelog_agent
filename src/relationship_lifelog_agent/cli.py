@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
+import json
 import sys
 from typing import Any
+from uuid import uuid4
 
 from relationship_lifelog_agent.agent.memory import build_memory
 from relationship_lifelog_agent.analytics.dry_run import (
@@ -22,6 +24,14 @@ from relationship_lifelog_agent.db.backup import (
 )
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.doctor import render_doctor_json, render_doctor_text, run_doctor
+from relationship_lifelog_agent.full_context.batch_builder import (
+    build_chronological_batches,
+    build_hybrid_batches,
+    build_source_then_time_batches,
+    validate_batch_coverage,
+)
+from relationship_lifelog_agent.full_context.context_budget import decide_context_mode
+from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
 from relationship_lifelog_agent.llm.status import render_llm_status_json, render_llm_status_text, run_llm_status
 from relationship_lifelog_agent.profiles import load_profile_context
 from relationship_lifelog_agent.upstream_identities import (
@@ -60,6 +70,9 @@ def main(argv: list[str] | None = None) -> None:
     if _is_llm_command(args):
         _llm_main(args)
         return
+    if _is_full_context_command(args):
+        _full_context_main(args)
+        return
     if _is_profile_command(args):
         _profile_main(args)
         return
@@ -83,6 +96,10 @@ def _is_db_command(args: list[str]) -> bool:
 
 def _is_llm_command(args: list[str]) -> bool:
     return "llm" in args
+
+
+def _is_full_context_command(args: list[str]) -> bool:
+    return "full-context" in args
 
 
 def _is_profile_command(args: list[str]) -> bool:
@@ -265,6 +282,63 @@ def _llm_main(argv: list[str]) -> None:
     parser.error("unknown llm command")
 
 
+def _full_context_main(argv: list[str]) -> None:
+    parser = _build_full_context_parser()
+    args = parser.parse_args(argv)
+    settings = load_config(args.config)
+    if args.full_context_command == "plan":
+        run_id = f"full-context-plan-{uuid4().hex[:12]}"
+        manifest = build_full_data_manifest(
+            run_id=run_id,
+            profile_id=args.profile_id,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            line_items=(),
+            note_items=(),
+            media_items=(),
+            face_items=(),
+            location_items=(),
+        )
+        recommended_mode = decide_context_mode(manifest, settings.llm)
+        manifest = replace(
+            manifest,
+            can_fit_single_context=recommended_mode == "single_context",
+            recommended_mode=recommended_mode,
+        )
+        full_scan = settings.analysis.full_scan
+        batch_builder = {
+            "chronological": build_chronological_batches,
+            "source_then_time": build_source_then_time_batches,
+            "hybrid": build_hybrid_batches,
+        }[full_scan.batch_strategy]
+        batches = batch_builder(
+            run_id=run_id,
+            max_items_per_batch=full_scan.max_items_per_batch,
+            max_chars_per_batch=full_scan.max_chars_per_batch,
+            overlap_items=full_scan.overlap_items,
+            max_batches_per_run=full_scan.max_batches_per_run,
+        )
+        coverage = validate_batch_coverage(batches=batches)
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {
+                        "manifest": asdict(manifest),
+                        "batch_count": len(batches),
+                        "batch_strategy": full_scan.batch_strategy,
+                        "coverage": asdict(coverage),
+                        "note": "Full Data Access loader is not connected in this phase; counts reflect the provided item set.",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            _print_full_context_plan(manifest, len(batches), full_scan.batch_strategy, coverage)
+        return
+    parser.error("unknown full-context command")
+
+
 def _analyze_main(argv: list[str]) -> None:
     parser = _build_analyze_parser()
     args = parser.parse_args(argv)
@@ -394,6 +468,20 @@ def _build_llm_parser() -> argparse.ArgumentParser:
     llm_sub = llm.add_subparsers(dest="llm_command", required=True)
     status = llm_sub.add_parser("status", help="Check Ollama/local LLM status without sending private data.")
     status.add_argument("--format", choices=("text", "json"), default="text")
+    return parser
+
+
+def _build_full_context_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Relationship Lifelog Agent full-context planning CLI.")
+    parser.add_argument("--config", default=None, help="Optional private config path.")
+    subparsers = parser.add_subparsers(dest="resource", required=True)
+    full_context = subparsers.add_parser("full-context", help="Plan private full-context analysis without raw output.")
+    full_context_sub = full_context.add_subparsers(dest="full_context_command", required=True)
+    plan = full_context_sub.add_parser("plan", help="Build a manifest, context budget, and batch plan summary.")
+    plan.add_argument("--profile-id", required=True, type=int)
+    plan.add_argument("--date-from", required=True)
+    plan.add_argument("--date-to", required=True)
+    plan.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
@@ -563,6 +651,33 @@ def _display(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _print_full_context_plan(manifest: Any, batch_count: int, batch_strategy: str, coverage: Any) -> None:
+    print("Full Context Plan")
+    print(f"run_id: {manifest.run_id}")
+    print(f"profile_id: {manifest.profile_id}")
+    print(f"date_range: {manifest.date_from}..{manifest.date_to}")
+    print("manifest summary:")
+    print(f"- line_count: {manifest.line_count}")
+    print(f"- note_count: {manifest.note_count}")
+    print(f"- media_count: {manifest.media_count}")
+    print(f"- face_count: {manifest.face_count}")
+    print(f"- location_count: {manifest.location_count}")
+    print(f"- date_coverage: {manifest.date_coverage}")
+    print(f"- available_payload_types: {', '.join(manifest.available_payload_types) or 'none'}")
+    print(f"estimated_tokens: {manifest.estimated_tokens}")
+    print(f"estimated_chars: {manifest.estimated_chars}")
+    print(f"recommended_mode: {manifest.recommended_mode}")
+    print(f"can_fit_single_context: {str(manifest.can_fit_single_context).lower()}")
+    print(f"batch_strategy: {batch_strategy}")
+    print(f"batch_count: {batch_count}")
+    print("coverage check:")
+    print(f"- ok: {str(coverage.ok).lower()}")
+    print(f"- total_source_refs: {coverage.total_source_refs}")
+    print(f"- covered_source_refs: {coverage.covered_source_refs}")
+    print(f"- missing_source_refs: {len(coverage.missing_source_refs)}")
+    print("note: Full Data Access loader is not connected in this phase; no raw upstream data was loaded.")
 
 
 if __name__ == "__main__":
