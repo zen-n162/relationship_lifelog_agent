@@ -224,3 +224,28 @@ def test_full_context_plan_cli_outputs_safe_summary(capsys) -> None:
     assert "recommended_mode: single_context" in output
     assert "batch_count: 0" in output
     assert "[redacted_path]" not in output
+
+
+def test_full_context_pack_preview_cli_outputs_prompt_metadata(capsys) -> None:
+    cli_main(
+        [
+            "full-context",
+            "pack-preview",
+            "--profile-id",
+            "1",
+            "--date-from",
+            "2024-12-01",
+            "--date-to",
+            "2024-12-31",
+            "--max-preview-chars",
+            "200",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Full Context Prompt Pack Preview" in output
+    assert "prompt_size_chars:" in output
+    assert "included_payload_types:" in output
+    assert "raw_text_included: false" in output
+    assert "prompt_logging_allowed: false" in output
+    assert "raw_payload_cache_allowed: false" in output

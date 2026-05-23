@@ -32,7 +32,9 @@ from relationship_lifelog_agent.full_context.batch_builder import (
 )
 from relationship_lifelog_agent.full_context.context_budget import decide_context_mode
 from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
+from relationship_lifelog_agent.full_context.prompt_packer import build_single_context_prompt
 from relationship_lifelog_agent.llm.status import render_llm_status_json, render_llm_status_text, run_llm_status
+from relationship_lifelog_agent.privacy.raw_payload_policy import from_config as raw_payload_policy_from_config
 from relationship_lifelog_agent.profiles import load_profile_context
 from relationship_lifelog_agent.upstream_identities import (
     IDENTITY_KINDS,
@@ -286,7 +288,7 @@ def _full_context_main(argv: list[str]) -> None:
     parser = _build_full_context_parser()
     args = parser.parse_args(argv)
     settings = load_config(args.config)
-    if args.full_context_command == "plan":
+    if args.full_context_command in {"plan", "pack-preview"}:
         run_id = f"full-context-plan-{uuid4().hex[:12]}"
         manifest = build_full_data_manifest(
             run_id=run_id,
@@ -305,6 +307,7 @@ def _full_context_main(argv: list[str]) -> None:
             can_fit_single_context=recommended_mode == "single_context",
             recommended_mode=recommended_mode,
         )
+    if args.full_context_command == "plan":
         full_scan = settings.analysis.full_scan
         batch_builder = {
             "chronological": build_chronological_batches,
@@ -335,6 +338,23 @@ def _full_context_main(argv: list[str]) -> None:
             )
         else:
             _print_full_context_plan(manifest, len(batches), full_scan.batch_strategy, coverage)
+        return
+    if args.full_context_command == "pack-preview":
+        policy = raw_payload_policy_from_config(settings)
+        bundle = build_single_context_prompt(
+            question=args.question,
+            profile_context={"profile_id": args.profile_id},
+            manifest=manifest,
+            full_data={
+                "line_items": (),
+                "note_items": (),
+                "media_items": (),
+                "face_items": (),
+                "location_items": (),
+            },
+            raw_payload_policy=policy,
+        )
+        _print_full_context_pack_preview(bundle, manifest, args.max_preview_chars)
         return
     parser.error("unknown full-context command")
 
@@ -482,6 +502,12 @@ def _build_full_context_parser() -> argparse.ArgumentParser:
     plan.add_argument("--date-from", required=True)
     plan.add_argument("--date-to", required=True)
     plan.add_argument("--format", choices=("text", "json"), default="text")
+    preview = full_context_sub.add_parser("pack-preview", help="Build a safe prompt preview without loading raw upstream data.")
+    preview.add_argument("--profile-id", required=True, type=int)
+    preview.add_argument("--date-from", required=True)
+    preview.add_argument("--date-to", required=True)
+    preview.add_argument("--question", default="Summarize the selected private full context range.")
+    preview.add_argument("--max-preview-chars", type=int, default=2000)
     return parser
 
 
@@ -678,6 +704,34 @@ def _print_full_context_plan(manifest: Any, batch_count: int, batch_strategy: st
     print(f"- covered_source_refs: {coverage.covered_source_refs}")
     print(f"- missing_source_refs: {len(coverage.missing_source_refs)}")
     print("note: Full Data Access loader is not connected in this phase; no raw upstream data was loaded.")
+
+
+def _print_full_context_pack_preview(bundle: Any, manifest: Any, max_preview_chars: int) -> None:
+    limit = max(0, max_preview_chars)
+    included_payload_types = tuple(bundle.metadata.get("included_payload_types", ()))
+    print("Full Context Prompt Pack Preview")
+    print(f"bundle_id: {bundle.bundle_id}")
+    print(f"profile_id: {manifest.profile_id}")
+    print(f"date_range: {manifest.date_from}..{manifest.date_to}")
+    print(f"prompt_size_chars: {bundle.estimated_chars}")
+    print(f"prompt_size_tokens_estimate: {bundle.estimated_tokens}")
+    print(f"included_payload_types: {', '.join(included_payload_types) or 'none'}")
+    print("source counts:")
+    print(f"- line_count: {manifest.line_count}")
+    print(f"- note_count: {manifest.note_count}")
+    print(f"- media_count: {manifest.media_count}")
+    print(f"- face_count: {manifest.face_count}")
+    print(f"- location_count: {manifest.location_count}")
+    print(f"raw_text_included: {str(bool(bundle.metadata.get('raw_text_included'))).lower()}")
+    print(f"prompt_logging_allowed: {str(bool(bundle.metadata.get('prompt_logging_allowed'))).lower()}")
+    print(f"raw_payload_cache_allowed: {str(bool(bundle.metadata.get('raw_payload_cache_allowed'))).lower()}")
+    print(f"preview_chars: {min(limit, len(bundle.prompt_text))}")
+    print("preview:")
+    print(bundle.prompt_text[:limit])
+    if len(bundle.prompt_text) > limit:
+        print("[preview truncated; full prompt not displayed]")
+    else:
+        print("[preview complete; no raw upstream data was loaded]")
 
 
 if __name__ == "__main__":

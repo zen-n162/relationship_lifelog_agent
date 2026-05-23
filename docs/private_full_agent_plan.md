@@ -686,6 +686,23 @@ read-only loader output as its item set.
 
 Create `full_context/prompt_packer.py`.
 
+Status: implemented as the first prompt packing layer. It converts
+`FullPromptBundle` / `FullScanBatch` inputs into structured local-LLM prompts,
+keeps `source_id` and `source_ref` in every item, and applies
+`RawPayloadPolicy` before raw text, paths, GPS, face crops, embeddings, or
+unverified candidates enter the prompt. Full prompt logging and raw payload
+cache metadata remain false by default.
+
+CLI:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context pack-preview \
+  --profile-id 1 \
+  --date-from 2024-12-01 \
+  --date-to 2024-12-31 \
+  --max-preview-chars 2000
+```
+
 Responsibilities:
 
 - build prompt bundles from full items

@@ -185,6 +185,21 @@ The output includes manifest counts, date coverage, estimated tokens/chars,
 `single_context` versus `iterative_full_scan`, batch strategy, batch count, and
 source-ref coverage status.
 
+To preview how the current empty full-context item set would be packed for the
+local LLM, use:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context pack-preview \
+  --profile-id 1 \
+  --date-from 2024-12-01 \
+  --date-to 2024-12-31 \
+  --max-preview-chars 2000
+```
+
+The preview reports prompt size, included payload types, source counts, raw text
+inclusion, and only the first preview characters. It does not log or cache the
+full prompt unless future explicit opt-in settings allow that.
+
 ## Upstream Schema Inspection
 
 Use schema inspection to check whether the upstream SQLite tables and columns

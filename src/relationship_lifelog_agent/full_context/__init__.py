@@ -14,6 +14,12 @@ from relationship_lifelog_agent.full_context.context_budget import (
     estimate_tokens_for_text,
 )
 from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
+from relationship_lifelog_agent.full_context.prompt_packer import (
+    build_batch_prompt,
+    build_single_context_prompt,
+    build_synthesis_prompt,
+    sanitize_or_include_item_by_policy,
+)
 from relationship_lifelog_agent.full_context.types import (
     FullBatchAnalysis,
     FullDataManifest,
@@ -42,10 +48,14 @@ __all__ = [
     "build_chronological_batches",
     "build_full_data_manifest",
     "build_hybrid_batches",
+    "build_batch_prompt",
     "build_source_then_time_batches",
+    "build_single_context_prompt",
+    "build_synthesis_prompt",
     "decide_context_mode",
     "estimate_bundle_tokens",
     "estimate_tokens_for_item",
     "estimate_tokens_for_text",
+    "sanitize_or_include_item_by_policy",
     "validate_batch_coverage",
 ]
