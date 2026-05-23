@@ -43,6 +43,7 @@ class AdapterSettings:
 @dataclass(frozen=True)
 class FullScanSettings:
     batch_strategy: str = "hybrid"
+    max_items_per_run: int = 5000
     max_items_per_batch: int = 200
     max_chars_per_batch: int = 80000
     overlap_items: int = 5

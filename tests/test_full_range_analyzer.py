@@ -225,6 +225,21 @@ def test_max_llm_calls_is_not_exceeded() -> None:
         )
 
 
+def test_max_runtime_seconds_is_not_exceeded() -> None:
+    lines = _line_items()
+    manifest = _manifest(lines)
+    prompt = _single_context_prompt(lines, _private_policy())
+
+    with pytest.raises(FullRangeBudgetExceeded):
+        analyze_single_context(
+            "question",
+            manifest,
+            prompt,
+            MockLlmClient([_synthesis_response()]),
+            max_runtime_seconds=0.0,
+        )
+
+
 def test_safe_window_prompt_is_rejected_by_analyzer() -> None:
     lines = _line_items()
     manifest = _manifest(lines)

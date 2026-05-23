@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any, Iterable
 
 from pydantic import BaseModel, ValidationError
@@ -39,9 +40,13 @@ class FullRangeBudgetExceeded(FullRangeAnalysisError):
 @dataclass
 class LlmCallBudget:
     max_llm_calls: int = 20
+    max_runtime_seconds: float | None = None
     used_llm_calls: int = 0
+    started_at: float = field(default_factory=monotonic)
 
     def consume(self) -> None:
+        if self.max_runtime_seconds is not None and monotonic() - self.started_at > self.max_runtime_seconds:
+            raise FullRangeBudgetExceeded(f"max_runtime_seconds exceeded: {self.max_runtime_seconds}")
         if self.used_llm_calls >= self.max_llm_calls:
             raise FullRangeBudgetExceeded(f"max_llm_calls exceeded: {self.max_llm_calls}")
         self.used_llm_calls += 1
@@ -54,11 +59,12 @@ def analyze_single_context(
     llm_client: Any,
     *,
     max_llm_calls: int = 1,
+    max_runtime_seconds: float | None = None,
     retry_count: int = 1,
     fallback_on_error: bool = True,
 ) -> FullRangeSynthesis:
     _ensure_private_full_prompt(prompt_bundle)
-    budget = LlmCallBudget(max_llm_calls=max_llm_calls)
+    budget = LlmCallBudget(max_llm_calls=max_llm_calls, max_runtime_seconds=max_runtime_seconds)
     result = _call_structured_llm(
         prompt_bundle=prompt_bundle,
         schema_model=FullRangeSynthesisSchema,
@@ -82,6 +88,7 @@ def analyze_iterative_batches(
     raw_payload_policy: RawPayloadPolicy | None = None,
     profile_context: dict[str, Any] | None = None,
     max_llm_calls: int = 20,
+    max_runtime_seconds: float | None = None,
     retry_count: int = 1,
     fallback_on_error: bool = True,
 ) -> FullRangeSynthesis:
@@ -91,7 +98,7 @@ def analyze_iterative_batches(
     batch_tuple = tuple(batches)
     if len(batch_tuple) + 1 > max_llm_calls:
         raise FullRangeBudgetExceeded(f"max_llm_calls={max_llm_calls} is smaller than required calls={len(batch_tuple) + 1}")
-    budget = LlmCallBudget(max_llm_calls=max_llm_calls)
+    budget = LlmCallBudget(max_llm_calls=max_llm_calls, max_runtime_seconds=max_runtime_seconds)
     analyses: list[FullBatchAnalysis] = []
     for batch in batch_tuple:
         batch_prompt = build_batch_prompt(
@@ -163,11 +170,12 @@ def synthesize_full_range(
     *,
     budget: LlmCallBudget | None = None,
     max_llm_calls: int = 20,
+    max_runtime_seconds: float | None = None,
     retry_count: int = 1,
     fallback_on_error: bool = True,
 ) -> FullRangeSynthesis:
     analyses = tuple(batch_analyses)
-    budget = budget or LlmCallBudget(max_llm_calls=max_llm_calls)
+    budget = budget or LlmCallBudget(max_llm_calls=max_llm_calls, max_runtime_seconds=max_runtime_seconds)
     prompt_bundle = build_synthesis_prompt(question, manifest, analyses)
     result = _call_structured_llm(
         prompt_bundle=prompt_bundle,

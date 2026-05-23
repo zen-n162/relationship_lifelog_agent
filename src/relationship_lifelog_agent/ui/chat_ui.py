@@ -10,6 +10,15 @@ from relationship_lifelog_agent.agent.reasoning_orchestrator import answer_with_
 from relationship_lifelog_agent.agent.streaming import AgentStreamEvent
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
+from relationship_lifelog_agent.full_context.batch_builder import (
+    build_chronological_batches,
+    build_hybrid_batches,
+    build_source_then_time_batches,
+    validate_batch_coverage,
+)
+from relationship_lifelog_agent.full_context.context_budget import decide_context_mode
+from relationship_lifelog_agent.full_context.data_access import load_full_context_data
+from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
 from relationship_lifelog_agent.profiles import PROFILE_NONE_VALUE, default_profile_choice, parse_profile_choice, profile_choices
 from relationship_lifelog_agent.review.actions import apply_review_action
@@ -68,6 +77,7 @@ def build_chat_ui(settings: Settings) -> Any:
                 label="Analysis Mode",
                 interactive=True,
             )
+            analysis_mode_notice = gr.Markdown(_analysis_mode_notice(settings.analysis.mode))
             date_scope = gr.Radio(
                 choices=list(DATE_SCOPE_CHOICES),
                 value=_ui_date_scope(settings.analysis.default_scope),
@@ -176,6 +186,8 @@ def build_chat_ui(settings: Settings) -> Any:
                     precision=0,
                     minimum=1,
                 )
+            dry_run_preview = gr.Button("Dry-run preview", variant="secondary")
+            dry_run_preview_status = gr.Markdown("")
             mode = gr.Radio(["private", "public"], value=settings.app.mode, label="Mode")
             debug = gr.Checkbox(value=settings.ui.show_debug_by_default, label="Debug output")
         with gr.Accordion("Review last answer", open=False):
@@ -251,6 +263,28 @@ def build_chat_ui(settings: Settings) -> Any:
                 conversation_state=current_conversation_state,
             )
 
+        def preview_full_context(
+            selected_backend: str,
+            selected_analysis_mode: str,
+            selected_date_scope: str,
+            selected_profile: str | None,
+            selected_date_from: str | None,
+            selected_date_to: str | None,
+            selected_window_days: int | float | None,
+            selected_max_batches: int | float | None,
+        ) -> str:
+            return build_full_context_dry_run_preview_text(
+                selected_backend,
+                selected_analysis_mode,
+                selected_date_scope,
+                selected_profile,
+                selected_date_from,
+                selected_date_to,
+                selected_window_days,
+                selected_max_batches,
+                base_settings=settings,
+            )
+
         chat_inputs = [
             message,
             chatbot,
@@ -308,6 +342,21 @@ def build_chat_ui(settings: Settings) -> Any:
             ],
             [profile_save_status, profile],
         )
+        analysis_mode.change(_analysis_mode_notice, analysis_mode, analysis_mode_notice)
+        dry_run_preview.click(
+            preview_full_context,
+            [
+                backend,
+                analysis_mode,
+                date_scope,
+                profile,
+                date_from,
+                date_to,
+                post_conflict_window_days,
+                max_batches,
+            ],
+            dry_run_preview_status,
+        )
         clear.click(
             lambda: ([], gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], "", {}),
             None,
@@ -315,6 +364,101 @@ def build_chat_ui(settings: Settings) -> Any:
         )
 
     return demo
+
+
+def build_full_context_dry_run_preview_text(
+    selected_backend: str,
+    analysis_mode: str | None,
+    date_scope: str | None,
+    selected_profile: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    post_conflict_window_days: int | float | None,
+    max_batches: int | float | None,
+    *,
+    base_settings: Settings | None = None,
+) -> str:
+    """Return a counts-only full-context preview for the UI."""
+
+    settings = _settings_for_ui(
+        base_settings or Settings(),
+        selected_backend,
+        post_conflict_window_days,
+        analysis_mode=analysis_mode,
+        date_scope=date_scope,
+        max_batches=max_batches,
+    )
+    selected_mode = settings.analysis.mode
+    if selected_mode not in {"private_full_range", "private_full_corpus"}:
+        return "safe_window では full-context dry-run preview は不要です。"
+    profile_id = parse_profile_choice(selected_profile)
+    scoped_date_from, scoped_date_to = _dates_for_scope(date_scope, date_from, date_to)
+    if date_scope == "custom" and (not scoped_date_from or not scoped_date_to):
+        return "custom scope では date_from / date_to を入力してください。"
+    dataset = load_full_context_data(
+        settings,
+        profile_id=profile_id,
+        date_from=scoped_date_from,
+        date_to=scoped_date_to,
+        scope="all" if date_scope == "all" or selected_mode == "private_full_corpus" else "custom",
+        mode="private",
+    )
+    manifest = build_full_data_manifest(
+        run_id="ui-dry-run-preview",
+        profile_id=profile_id,
+        date_from=scoped_date_from,
+        date_to=scoped_date_to,
+        line_items=dataset.line_items,
+        note_items=dataset.note_items,
+        media_items=dataset.media_items,
+        face_items=dataset.face_items,
+        location_items=dataset.location_items,
+    )
+    context_mode = decide_context_mode(manifest, settings.llm)
+    recommended_mode = (
+        "iterative_full_scan"
+        if selected_mode == "private_full_corpus"
+        and manifest.line_count + manifest.note_count + manifest.media_count + manifest.face_count + manifest.location_count > 0
+        else context_mode
+    )
+    batches = _build_ui_full_context_batches(settings, "ui-dry-run-preview", dataset)
+    max_batch_count = settings.analysis.full_scan.max_batches_per_run
+    planned_count = min(len(batches), max_batch_count)
+    coverage = validate_batch_coverage(
+        line_items=dataset.line_items,
+        note_items=dataset.note_items,
+        media_items=dataset.media_items,
+        face_items=dataset.face_items,
+        location_items=dataset.location_items,
+        batches=batches[:planned_count],
+    )
+    warnings = list(dataset.warnings)
+    if len(batches) > max_batch_count:
+        warnings.append(f"estimated batch count {len(batches)} exceeds max_batches {max_batch_count}.")
+    lines = [
+        "### Full-context dry-run preview",
+        f"- analysis_mode: `{selected_mode}`",
+        f"- date_range: `{_preview_date_range_label(scoped_date_from, scoped_date_to)}`",
+        f"- line_count: `{manifest.line_count}`",
+        f"- note_count: `{manifest.note_count}`",
+        f"- media_count: `{manifest.media_count}`",
+        f"- face_count: `{manifest.face_count}`",
+        f"- location_count: `{manifest.location_count}`",
+        f"- estimated_tokens: `{manifest.estimated_tokens}`",
+        f"- recommended_mode: `{recommended_mode}`",
+        f"- batch_count_estimate: `{len(batches)}`",
+        f"- planned_batches: `{planned_count}`",
+        f"- coverage_ok: `{str(coverage.ok).lower()}`",
+        "- llm_calls: `0`",
+        "- raw payload: previewには表示しません",
+    ]
+    if selected_mode == "private_full_corpus":
+        lines.append("- caution: 全期間分析は時間がかかる場合があります。まずdry-runで件数とbatch数を確認してください。")
+    if warnings:
+        lines.append("")
+        lines.append("warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(lines)
 
 
 def build_ui_chat_response(
@@ -1041,6 +1185,45 @@ def _settings_for_ui(
         private_full_llm_payload=raw_payload,
         relationship=replace(settings.relationship, post_conflict_window_days=window_days),
     )
+
+
+def _analysis_mode_notice(analysis_mode: str | None) -> str:
+    if analysis_mode == "private_full_corpus":
+        return (
+            "**注意:** private_full_corpus は全期間を対象にするため時間がかかる場合があります。"
+            "まず Dry-run preview で件数とbatch数を確認してください。"
+        )
+    if analysis_mode == "private_full_range":
+        return "private_full_range は指定範囲のデータをlocal LLMで分析します。範囲を小さく始めると安全です。"
+    return "safe_window は従来どおり小さな安全windowだけを分析します。"
+
+
+def _build_ui_full_context_batches(settings: Settings, run_id: str, dataset: Any) -> tuple[Any, ...]:
+    full_scan = settings.analysis.full_scan
+    builders = {
+        "chronological": build_chronological_batches,
+        "source_then_time": build_source_then_time_batches,
+        "hybrid": build_hybrid_batches,
+    }
+    builder = builders.get(full_scan.batch_strategy, build_hybrid_batches)
+    return builder(
+        run_id=run_id,
+        line_items=dataset.line_items,
+        note_items=dataset.note_items,
+        media_items=dataset.media_items,
+        face_items=dataset.face_items,
+        location_items=dataset.location_items,
+        max_items_per_batch=full_scan.max_items_per_batch,
+        max_chars_per_batch=full_scan.max_chars_per_batch,
+        overlap_items=full_scan.overlap_items,
+        max_batches_per_run=None,
+    )
+
+
+def _preview_date_range_label(date_from: str | None, date_to: str | None) -> str:
+    if date_from is None and date_to is None:
+        return "all"
+    return f"{date_from or ''}..{date_to or ''}"
 
 
 def _safe_window_days(value: int | float | None) -> int:

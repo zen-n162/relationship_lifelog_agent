@@ -28,6 +28,7 @@ analysis:
   allow_iterative_full_scan: true
   full_scan:
     batch_strategy: "hybrid"
+    max_items_per_run: 5000
     max_items_per_batch: 200
     max_chars_per_batch: 80000
     overlap_items: 5

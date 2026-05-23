@@ -8,7 +8,7 @@ from relationship_lifelog_agent.agent.reasoning_orchestrator import stream_answe
 from relationship_lifelog_agent.config import LlmSettings, PathSettings, RelationshipSettings, Settings, UiSettings
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.llm.local_client import LocalLlmClient
-from relationship_lifelog_agent.ui.chat_ui import build_ui_chat_turn_stream
+from relationship_lifelog_agent.ui.chat_ui import build_full_context_dry_run_preview_text, build_ui_chat_turn_stream
 
 
 def test_stream_answer_yields_progress_and_final_answer(tmp_path) -> None:
@@ -227,6 +227,31 @@ def test_private_full_stream_progress_is_safe_and_multi_step(tmp_path) -> None:
     assert "raw note全文" not in progress_text
     assert "/home/" not in progress_text
     assert progress_messages[-1]["metadata"]["status"] == "done"
+
+
+def test_full_corpus_ui_dry_run_preview_is_counts_only(tmp_path) -> None:
+    settings = _settings_with_profile(tmp_path)
+
+    preview = build_full_context_dry_run_preview_text(
+        "mock",
+        "private_full_corpus",
+        "all",
+        "1",
+        "",
+        "",
+        14,
+        5,
+        base_settings=settings,
+    )
+
+    assert "Full-context dry-run preview" in preview
+    assert "analysis_mode: `private_full_corpus`" in preview
+    assert "date_range: `all`" in preview
+    assert "llm_calls: `0`" in preview
+    assert "時間がかかる" in preview
+    assert "/home/" not in preview
+    assert "raw LINE全文" not in preview
+    assert "raw note全文" not in preview
 
 
 def _settings_with_profile(tmp_path, *, llm: LlmSettings | None = None) -> Settings:

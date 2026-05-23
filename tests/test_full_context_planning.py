@@ -3,6 +3,7 @@ from __future__ import annotations
 from relationship_lifelog_agent.cli import main as cli_main
 from relationship_lifelog_agent.config import LlmSettings
 from relationship_lifelog_agent.db.repository import RelationshipRepository
+from relationship_lifelog_agent.full_context.data_access import full_context_batch_input_hash
 from relationship_lifelog_agent.full_context.batch_builder import (
     build_chronological_batches,
     build_hybrid_batches,
@@ -252,9 +253,13 @@ def test_full_context_pack_preview_cli_outputs_prompt_metadata(capsys) -> None:
     assert "raw_payload_cache_allowed: false" in output
 
 
-def test_full_context_analyze_dry_run_does_not_call_llm(capsys) -> None:
+def test_full_context_analyze_dry_run_does_not_call_llm(tmp_path, capsys) -> None:
+    config_path = _write_full_context_config(tmp_path)
+
     cli_main(
         [
+            "--config",
+            str(config_path),
             "full-context",
             "analyze",
             "--profile-id",
@@ -274,6 +279,127 @@ def test_full_context_analyze_dry_run_does_not_call_llm(capsys) -> None:
     assert "Full Context Analyze Dry Run" in output
     assert "llm_calls: 0" in output
     assert "local LLM was not called" in output
+
+
+def test_full_context_analyze_scope_all_builds_full_corpus_manifest(tmp_path, capsys) -> None:
+    config_path = _write_full_context_config(tmp_path)
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "full-context",
+            "analyze",
+            "--profile-id",
+            "1",
+            "--scope",
+            "all",
+            "--question",
+            "いおりとの関係を全期間で振り返って",
+            "--dry-run",
+            "true",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "analysis_mode: private_full_corpus" in output
+    assert "date_range: all" in output
+    assert "- line_count: 4" in output
+    assert "- note_count: 4" in output
+    assert "- media_count: 2" in output
+    assert "recommended_mode: iterative_full_scan" in output
+    assert "llm_calls: 0" in output
+
+    repo = RelationshipRepository(tmp_path / "relationship.sqlite")
+    runs = repo.list_full_analysis_runs(limit=1)
+    assert runs[0]["analysis_mode"] == "private_full_corpus"
+    assert runs[0]["date_from"] is None
+    assert runs[0]["date_to"] is None
+
+
+def test_full_context_full_corpus_warns_when_max_batches_exceeded(tmp_path, capsys) -> None:
+    config_path = _write_full_context_config(
+        tmp_path,
+        max_items_per_batch=1,
+        max_batches_per_run=1,
+    )
+
+    cli_main(
+        [
+            "--config",
+            str(config_path),
+            "full-context",
+            "analyze",
+            "--profile-id",
+            "1",
+            "--scope",
+            "all",
+            "--question",
+            "いおりとの関係を全期間で振り返って",
+            "--dry-run",
+            "true",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "estimated batch count" in output
+    assert "exceeds max_batches_per_run 1" in output
+    assert "planned_batch_count: 1" in output
+
+
+def test_full_context_dry_run_reuses_existing_batch_cache(tmp_path, capsys) -> None:
+    config_path = _write_full_context_config(
+        tmp_path,
+        max_items_per_batch=2,
+        max_batches_per_run=10,
+    )
+    args = [
+        "--config",
+        str(config_path),
+        "full-context",
+        "analyze",
+        "--profile-id",
+        "1",
+        "--scope",
+        "all",
+        "--question",
+        "いおりとの関係を全期間で振り返って",
+        "--dry-run",
+        "true",
+    ]
+
+    cli_main(args)
+    _ = capsys.readouterr()
+    repo = RelationshipRepository(tmp_path / "relationship.sqlite")
+    first_run = repo.list_full_analysis_runs(limit=1)[0]
+    first_batch = repo.list_full_analysis_batches(run_id=first_run["id"], limit=1)[0]
+    repo.upsert_llm_analysis_cache(
+        analysis_type="full_context_batch",
+        source_window_hash=first_batch["input_hash"],
+        model_name="rule",
+        prompt_version="full-context-batch-v1",
+        result={"summary": "cached batch analysis"},
+    )
+
+    cli_main(args)
+
+    output = capsys.readouterr().out
+    assert "cache_reused_batches: 1" in output
+
+
+def test_full_context_batch_hash_is_stable_across_runs() -> None:
+    item = FullLineItem(
+        source_ref="line:stable",
+        source_id="stable",
+        conversation_id="c",
+        timestamp="2025-01-01",
+        speaker_id="s",
+        speaker_label="speaker",
+    )
+    first = build_hybrid_batches(run_id="run-a", line_items=(item,), overlap_items=0)[0]
+    second = build_hybrid_batches(run_id="run-b", line_items=(item,), overlap_items=0)[0]
+
+    assert full_context_batch_input_hash(first) == full_context_batch_input_hash(second)
 
 
 def test_full_context_runs_list_and_show_cli(tmp_path, capsys) -> None:
@@ -306,3 +432,36 @@ paths:
     assert f"id: {run_id}" in show_output
     assert "manifest_keys: line_count" in show_output
     assert "batch_count: 0" in show_output
+
+
+def _write_full_context_config(
+    tmp_path,
+    *,
+    max_items_per_batch: int = 200,
+    max_batches_per_run: int = 200,
+) -> object:
+    db_path = tmp_path / "relationship.sqlite"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+paths:
+  relationship_db: "{db_path}"
+adapter:
+  backend: mock
+analysis:
+  full_scan:
+    max_items_per_batch: {max_items_per_batch}
+    max_batches_per_run: {max_batches_per_run}
+    overlap_items: 0
+""",
+        encoding="utf-8",
+    )
+    repo = RelationshipRepository(db_path)
+    repo.create_profile(
+        "いおり",
+        person_source_id="plr:person:target",
+        line_speaker_source_id="plr:line_speaker:target",
+        self_line_speaker_source_id="plr:line_speaker:self",
+        relationship_label="partner",
+    )
+    return config_path

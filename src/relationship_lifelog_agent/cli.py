@@ -31,8 +31,14 @@ from relationship_lifelog_agent.full_context.batch_builder import (
     validate_batch_coverage,
 )
 from relationship_lifelog_agent.full_context.context_budget import decide_context_mode
+from relationship_lifelog_agent.full_context.data_access import (
+    FullContextDataSet,
+    full_context_batch_input_hash,
+    load_full_context_data,
+)
 from relationship_lifelog_agent.full_context.full_range_analyzer import (
     FullRangeAnalysisError,
+    analyze_iterative_batches,
     analyze_single_context,
 )
 from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
@@ -295,54 +301,65 @@ def _full_context_main(argv: list[str]) -> None:
     settings = load_config(args.config)
     if args.full_context_command in {"plan", "pack-preview", "analyze"}:
         run_id = f"full-context-plan-{uuid4().hex[:12]}"
+        settings = _settings_with_full_context_cli_overrides(settings, args)
+        scope = getattr(args, "scope", "custom")
+        date_from, date_to = _full_context_dates(args)
+        analysis_mode = _effective_full_context_mode(settings, args)
+        dataset = load_full_context_data(
+            settings,
+            profile_id=args.profile_id,
+            date_from=date_from,
+            date_to=date_to,
+            scope=scope,
+            mode="private",
+            max_items_per_run=settings.analysis.full_scan.max_items_per_run,
+        )
         manifest = build_full_data_manifest(
             run_id=run_id,
             profile_id=args.profile_id,
-            date_from=args.date_from,
-            date_to=args.date_to,
-            line_items=(),
-            note_items=(),
-            media_items=(),
-            face_items=(),
-            location_items=(),
+            date_from=date_from,
+            date_to=date_to,
+            line_items=dataset.line_items,
+            note_items=dataset.note_items,
+            media_items=dataset.media_items,
+            face_items=dataset.face_items,
+            location_items=dataset.location_items,
         )
         recommended_mode = decide_context_mode(manifest, settings.llm)
         manifest = replace(
             manifest,
             can_fit_single_context=recommended_mode == "single_context",
-            recommended_mode=recommended_mode,
+            recommended_mode=_recommended_mode_for_full_context(analysis_mode, recommended_mode, manifest),
         )
+        plan = _build_full_context_batch_plan(settings, run_id, dataset)
     if args.full_context_command == "plan":
-        full_scan = settings.analysis.full_scan
-        batch_builder = {
-            "chronological": build_chronological_batches,
-            "source_then_time": build_source_then_time_batches,
-            "hybrid": build_hybrid_batches,
-        }[full_scan.batch_strategy]
-        batches = batch_builder(
-            run_id=run_id,
-            max_items_per_batch=full_scan.max_items_per_batch,
-            max_chars_per_batch=full_scan.max_chars_per_batch,
-            overlap_items=full_scan.overlap_items,
-            max_batches_per_run=full_scan.max_batches_per_run,
-        )
-        coverage = validate_batch_coverage(batches=batches)
         if args.format == "json":
             print(
                 json.dumps(
                     {
                         "manifest": asdict(manifest),
-                        "batch_count": len(batches),
-                        "batch_strategy": full_scan.batch_strategy,
-                        "coverage": asdict(coverage),
-                        "note": "Full Data Access loader is not connected in this phase; counts reflect the provided item set.",
+                        "batch_count": plan["estimated_batch_count"],
+                        "planned_batch_count": len(plan["planned_batches"]),
+                        "batch_strategy": settings.analysis.full_scan.batch_strategy,
+                        "coverage": asdict(plan["coverage"]),
+                        "warnings": [*dataset.warnings, *plan["warnings"]],
+                        "scope": scope,
                     },
                     ensure_ascii=False,
                     indent=2,
                 )
             )
         else:
-            _print_full_context_plan(manifest, len(batches), full_scan.batch_strategy, coverage)
+            _print_full_context_plan(
+                manifest,
+                plan["estimated_batch_count"],
+                settings.analysis.full_scan.batch_strategy,
+                plan["coverage"],
+                max_batches=settings.analysis.full_scan.max_batches_per_run,
+                planned_batch_count=len(plan["planned_batches"]),
+                warnings=[*dataset.warnings, *plan["warnings"]],
+                scope=scope,
+            )
         return
     if args.full_context_command == "pack-preview":
         policy = raw_payload_policy_from_config(settings)
@@ -350,13 +367,7 @@ def _full_context_main(argv: list[str]) -> None:
             question=args.question,
             profile_context={"profile_id": args.profile_id},
             manifest=manifest,
-            full_data={
-                "line_items": (),
-                "note_items": (),
-                "media_items": (),
-                "face_items": (),
-                "location_items": (),
-            },
+            full_data=dataset.as_full_data_mapping(),
             raw_payload_policy=policy,
         )
         _print_full_context_pack_preview(bundle, manifest, args.max_preview_chars)
@@ -364,33 +375,118 @@ def _full_context_main(argv: list[str]) -> None:
     if args.full_context_command == "analyze":
         policy = raw_payload_policy_from_config(settings)
         if args.dry_run == "true":
-            _print_full_context_analyze_dry_run(manifest, settings.analysis.mode)
+            repo = RelationshipRepository(settings.paths.relationship_db)
+            run_db_id, cache_reused = _persist_full_context_dry_run(
+                repo,
+                question=args.question,
+                analysis_mode=analysis_mode,
+                profile_id=args.profile_id,
+                date_from=date_from,
+                date_to=date_to,
+                manifest=manifest,
+                batches=plan["planned_batches"],
+                model_name=settings.llm.model,
+                warnings=[*dataset.warnings, *plan["warnings"]],
+            )
+            _print_full_context_analyze_dry_run(
+                manifest,
+                analysis_mode,
+                batch_count=plan["estimated_batch_count"],
+                planned_batch_count=len(plan["planned_batches"]),
+                max_batches=settings.analysis.full_scan.max_batches_per_run,
+                warnings=[*dataset.warnings, *plan["warnings"]],
+                run_db_id=run_db_id,
+                cache_reused=cache_reused,
+            )
             return
         if not policy.private_full_enabled:
             raise SystemExit("full-context analyze requires analysis.mode private_full_range or private_full_corpus")
-        bundle = build_single_context_prompt(
-            question=args.question,
-            profile_context={"profile_id": args.profile_id},
-            manifest=replace(manifest, raw_payload_policy=policy.to_dict()),
-            full_data={
-                "line_items": (),
-                "note_items": (),
-                "media_items": (),
-                "face_items": (),
-                "location_items": (),
-            },
-            raw_payload_policy=policy,
-        )
-        try:
-            synthesis = analyze_single_context(
+        if plan["estimated_batch_count"] > settings.analysis.full_scan.max_batches_per_run:
+            repo = RelationshipRepository(settings.paths.relationship_db)
+            repo.create_full_analysis_run(
                 question=args.question,
-                manifest=manifest,
-                prompt_bundle=bundle,
-                llm_client=LocalLlmClient(settings.llm),
-                max_llm_calls=args.max_llm_calls,
+                analysis_mode=analysis_mode,
+                profile_id=args.profile_id,
+                date_from=date_from,
+                date_to=date_to,
+                status="failed",
+                model_name=settings.llm.model,
+                manifest={
+                    **asdict(manifest),
+                    "warnings": [*dataset.warnings, *plan["warnings"]],
+                    "stop_reason": "max_batches_per_run exceeded",
+                },
             )
+            raise SystemExit("full-context analyze stopped: max_batches_per_run would be exceeded")
+        repo = RelationshipRepository(settings.paths.relationship_db)
+        run_db_id = repo.create_full_analysis_run(
+            question=args.question,
+            analysis_mode=analysis_mode,
+            profile_id=args.profile_id,
+            date_from=date_from,
+            date_to=date_to,
+            status="running",
+            model_name=settings.llm.model,
+            manifest={**asdict(manifest), "warnings": [*dataset.warnings, *plan["warnings"]], "dry_run": False},
+        )
+        batch_db_ids: list[int] = []
+        for batch in plan["planned_batches"]:
+            batch_db_ids.append(
+                repo.create_full_analysis_batch(
+                    run_id=run_db_id,
+                    batch_index=int(batch.batch_index),
+                    source_types=batch.source_types,
+                    date_from=batch.date_from,
+                    date_to=batch.date_to,
+                    item_count=len(batch.source_refs),
+                    source_refs=batch.source_refs,
+                    input_hash=full_context_batch_input_hash(batch),
+                    output={"queued": True},
+                    status="pending",
+                )
+            )
+        try:
+            if manifest.recommended_mode == "iterative_full_scan":
+                synthesis = analyze_iterative_batches(
+                    question=args.question,
+                    manifest=replace(manifest, raw_payload_policy=policy.to_dict()),
+                    batches=plan["planned_batches"],
+                    llm_client=LocalLlmClient(settings.llm),
+                    raw_payload_policy=policy,
+                    profile_context={"profile_id": args.profile_id},
+                    max_llm_calls=args.max_llm_calls,
+                    max_runtime_seconds=settings.analysis.max_runtime_seconds,
+                )
+            else:
+                bundle = build_single_context_prompt(
+                    question=args.question,
+                    profile_context={"profile_id": args.profile_id},
+                    manifest=replace(manifest, raw_payload_policy=policy.to_dict()),
+                    full_data=dataset.as_full_data_mapping(),
+                    raw_payload_policy=policy,
+                )
+                synthesis = analyze_single_context(
+                    question=args.question,
+                    manifest=manifest,
+                    prompt_bundle=bundle,
+                    llm_client=LocalLlmClient(settings.llm),
+                    max_llm_calls=args.max_llm_calls,
+                    max_runtime_seconds=settings.analysis.max_runtime_seconds,
+                )
         except FullRangeAnalysisError as exc:
+            repo.update_full_analysis_run(
+                run_db_id,
+                status="failed",
+                final_synthesis={"error": str(exc), "raw_payload_saved": False},
+            )
             raise SystemExit(str(exc)) from exc
+        for batch_db_id in batch_db_ids:
+            repo.update_full_analysis_batch(batch_db_id, status="succeeded", output={"completed": True})
+        repo.update_full_analysis_run(
+            run_db_id,
+            status="succeeded",
+            final_synthesis={**synthesis.result_json, "summary": synthesis.summary, "source_refs": list(synthesis.source_refs)},
+        )
         _print_full_context_analysis_result(synthesis)
         return
     if args.full_context_command == "runs":
@@ -408,6 +504,155 @@ def _full_context_main(argv: list[str]) -> None:
             _print_full_context_run(run, batches, observations)
             return
     parser.error("unknown full-context command")
+
+
+def _settings_with_full_context_cli_overrides(settings: Any, args: argparse.Namespace) -> Any:
+    full_scan = settings.analysis.full_scan
+    if getattr(args, "max_items_per_run", None) is not None:
+        full_scan = replace(full_scan, max_items_per_run=max(1, int(args.max_items_per_run)))
+    if getattr(args, "max_batches", None) is not None:
+        full_scan = replace(full_scan, max_batches_per_run=max(1, int(args.max_batches)))
+    analysis = replace(settings.analysis, full_scan=full_scan)
+    if getattr(args, "max_runtime", None) is not None:
+        analysis = replace(analysis, max_runtime_seconds=max(1, int(args.max_runtime)))
+    return replace(settings, analysis=analysis)
+
+
+def _effective_full_context_mode(settings: Any, args: argparse.Namespace) -> str:
+    requested = getattr(args, "analysis_mode", None)
+    if requested:
+        return str(requested)
+    if getattr(args, "scope", None) == "all":
+        return "private_full_corpus"
+    if settings.analysis.mode in {"private_full_range", "private_full_corpus"}:
+        return settings.analysis.mode
+    return "private_full_range"
+
+
+def _full_context_dates(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    scope = getattr(args, "scope", "custom")
+    if scope == "all":
+        return None, None
+    date_from = getattr(args, "date_from", None)
+    date_to = getattr(args, "date_to", None)
+    if scope == "custom" and (not date_from or not date_to):
+        raise SystemExit("full-context custom scope requires --date-from and --date-to")
+    return date_from, date_to
+
+
+def _recommended_mode_for_full_context(analysis_mode: str, context_mode: str, manifest: Any) -> str:
+    if analysis_mode == "private_full_corpus" and manifest.line_count + manifest.note_count + manifest.media_count > 0:
+        return "iterative_full_scan"
+    return context_mode
+
+
+def _build_full_context_batch_plan(settings: Any, run_id: str, dataset: FullContextDataSet) -> dict[str, Any]:
+    full_scan = settings.analysis.full_scan
+    batch_builder = {
+        "chronological": build_chronological_batches,
+        "source_then_time": build_source_then_time_batches,
+        "hybrid": build_hybrid_batches,
+    }[full_scan.batch_strategy]
+    estimated_batches = batch_builder(
+        run_id=run_id,
+        line_items=dataset.line_items,
+        note_items=dataset.note_items,
+        media_items=dataset.media_items,
+        face_items=dataset.face_items,
+        location_items=dataset.location_items,
+        max_items_per_batch=full_scan.max_items_per_batch,
+        max_chars_per_batch=full_scan.max_chars_per_batch,
+        overlap_items=full_scan.overlap_items,
+        max_batches_per_run=None,
+    )
+    max_batches = int(full_scan.max_batches_per_run)
+    planned_batches = estimated_batches[:max_batches]
+    coverage = validate_batch_coverage(
+        line_items=dataset.line_items,
+        note_items=dataset.note_items,
+        media_items=dataset.media_items,
+        face_items=dataset.face_items,
+        location_items=dataset.location_items,
+        batches=planned_batches,
+    )
+    warnings: list[str] = []
+    if len(estimated_batches) > max_batches:
+        warnings.append(
+            f"estimated batch count {len(estimated_batches)} exceeds max_batches_per_run {max_batches}; "
+            "increase max_batches or split the scope before running analysis."
+        )
+    return {
+        "estimated_batches": estimated_batches,
+        "planned_batches": planned_batches,
+        "estimated_batch_count": len(estimated_batches),
+        "coverage": coverage,
+        "warnings": tuple(warnings),
+    }
+
+
+def _persist_full_context_dry_run(
+    repo: RelationshipRepository,
+    *,
+    question: str,
+    analysis_mode: str,
+    profile_id: int,
+    date_from: str | None,
+    date_to: str | None,
+    manifest: Any,
+    batches: tuple[Any, ...],
+    model_name: str | None,
+    warnings: list[str],
+) -> tuple[int, int]:
+    run_id = repo.create_full_analysis_run(
+        question=question,
+        analysis_mode=analysis_mode,
+        profile_id=profile_id,
+        date_from=date_from,
+        date_to=date_to,
+        status="succeeded",
+        model_name=model_name,
+        manifest={**asdict(manifest), "warnings": list(warnings), "dry_run": True},
+    )
+    cache_reused = 0
+    for batch in batches:
+        input_hash = full_context_batch_input_hash(batch)
+        cached = repo.get_llm_analysis_cache(
+            analysis_type="full_context_batch",
+            source_window_hash=input_hash,
+            model_name=model_name or "rule",
+            prompt_version="full-context-batch-v1",
+        )
+        output = {"dry_run": True, "cache_reused": False}
+        status = "pending"
+        if cached is not None:
+            output = {"dry_run": True, "cache_reused": True, "cached_result": cached.get("result", {})}
+            status = "succeeded"
+            cache_reused += 1
+        repo.create_full_analysis_batch(
+            run_id=run_id,
+            batch_index=int(batch.batch_index),
+            source_types=batch.source_types,
+            date_from=batch.date_from,
+            date_to=batch.date_to,
+            item_count=len(batch.source_refs),
+            source_refs=batch.source_refs,
+            input_hash=input_hash,
+            output=output,
+            status=status,
+        )
+    repo.create_full_analysis_observation(
+        run_id=run_id,
+        observation_type="dry_run_plan",
+        summary="full-context dry-run; local LLM was not called",
+        source_refs=(),
+        result={
+            "batch_count": len(batches),
+            "cache_reused_batches": cache_reused,
+            "warnings": warnings,
+        },
+        confidence=0.5,
+    )
+    return run_id, cache_reused
 
 
 def _analyze_main(argv: list[str]) -> None:
@@ -550,22 +795,35 @@ def _build_full_context_parser() -> argparse.ArgumentParser:
     full_context_sub = full_context.add_subparsers(dest="full_context_command", required=True)
     plan = full_context_sub.add_parser("plan", help="Build a manifest, context budget, and batch plan summary.")
     plan.add_argument("--profile-id", required=True, type=int)
-    plan.add_argument("--date-from", required=True)
-    plan.add_argument("--date-to", required=True)
+    plan.add_argument("--scope", choices=("all", "custom"), default="custom")
+    plan.add_argument("--date-from", default=None)
+    plan.add_argument("--date-to", default=None)
     plan.add_argument("--format", choices=("text", "json"), default="text")
+    plan.add_argument("--max-items-per-run", type=int, default=None)
+    plan.add_argument("--max-batches", type=int, default=None)
+    plan.add_argument("--max-runtime", type=int, default=None)
     preview = full_context_sub.add_parser("pack-preview", help="Build a safe prompt preview without loading raw upstream data.")
     preview.add_argument("--profile-id", required=True, type=int)
-    preview.add_argument("--date-from", required=True)
-    preview.add_argument("--date-to", required=True)
+    preview.add_argument("--scope", choices=("all", "custom"), default="custom")
+    preview.add_argument("--date-from", default=None)
+    preview.add_argument("--date-to", default=None)
     preview.add_argument("--question", default="Summarize the selected private full context range.")
     preview.add_argument("--max-preview-chars", type=int, default=2000)
+    preview.add_argument("--max-items-per-run", type=int, default=None)
+    preview.add_argument("--max-batches", type=int, default=None)
+    preview.add_argument("--max-runtime", type=int, default=None)
     analyze = full_context_sub.add_parser("analyze", help="Analyze a private full-context range with the local LLM.")
     analyze.add_argument("--profile-id", required=True, type=int)
-    analyze.add_argument("--date-from", required=True)
-    analyze.add_argument("--date-to", required=True)
+    analyze.add_argument("--scope", choices=("all", "custom"), default="custom")
+    analyze.add_argument("--date-from", default=None)
+    analyze.add_argument("--date-to", default=None)
     analyze.add_argument("--question", required=True)
     analyze.add_argument("--dry-run", choices=("true", "false"), default="true")
     analyze.add_argument("--max-llm-calls", type=int, default=5)
+    analyze.add_argument("--max-items-per-run", type=int, default=None)
+    analyze.add_argument("--max-batches", type=int, default=None)
+    analyze.add_argument("--max-runtime", type=int, default=None)
+    analyze.add_argument("--analysis-mode", choices=("private_full_range", "private_full_corpus"), default=None)
     runs = full_context_sub.add_parser("runs", help="Inspect saved full analysis runs without raw payload output.")
     runs_sub = runs.add_subparsers(dest="runs_command", required=True)
     runs_list = runs_sub.add_parser("list", help="List saved full analysis runs.")
@@ -743,11 +1001,22 @@ def _display(value: Any) -> str:
     return str(value)
 
 
-def _print_full_context_plan(manifest: Any, batch_count: int, batch_strategy: str, coverage: Any) -> None:
+def _print_full_context_plan(
+    manifest: Any,
+    batch_count: int,
+    batch_strategy: str,
+    coverage: Any,
+    *,
+    max_batches: int | None = None,
+    planned_batch_count: int | None = None,
+    warnings: list[str] | tuple[str, ...] = (),
+    scope: str = "custom",
+) -> None:
     print("Full Context Plan")
     print(f"run_id: {manifest.run_id}")
     print(f"profile_id: {manifest.profile_id}")
-    print(f"date_range: {manifest.date_from}..{manifest.date_to}")
+    print(f"date_range: {_full_context_date_range_label(manifest)}")
+    print(f"scope: {scope}")
     print("manifest summary:")
     print(f"- line_count: {manifest.line_count}")
     print(f"- note_count: {manifest.note_count}")
@@ -762,12 +1031,20 @@ def _print_full_context_plan(manifest: Any, batch_count: int, batch_strategy: st
     print(f"can_fit_single_context: {str(manifest.can_fit_single_context).lower()}")
     print(f"batch_strategy: {batch_strategy}")
     print(f"batch_count: {batch_count}")
+    if max_batches is not None:
+        print(f"max_batches_per_run: {max_batches}")
+    if planned_batch_count is not None:
+        print(f"planned_batch_count: {planned_batch_count}")
     print("coverage check:")
     print(f"- ok: {str(coverage.ok).lower()}")
     print(f"- total_source_refs: {coverage.total_source_refs}")
     print(f"- covered_source_refs: {coverage.covered_source_refs}")
     print(f"- missing_source_refs: {len(coverage.missing_source_refs)}")
-    print("note: Full Data Access loader is not connected in this phase; no raw upstream data was loaded.")
+    if warnings:
+        print("warnings:")
+        for warning in warnings:
+            print(f"- {warning}")
+    print("note: counts are loaded through read-only adapters; raw payload is not printed.")
 
 
 def _print_full_context_pack_preview(bundle: Any, manifest: Any, max_preview_chars: int) -> None:
@@ -776,7 +1053,7 @@ def _print_full_context_pack_preview(bundle: Any, manifest: Any, max_preview_cha
     print("Full Context Prompt Pack Preview")
     print(f"bundle_id: {bundle.bundle_id}")
     print(f"profile_id: {manifest.profile_id}")
-    print(f"date_range: {manifest.date_from}..{manifest.date_to}")
+    print(f"date_range: {_full_context_date_range_label(manifest)}")
     print(f"prompt_size_chars: {bundle.estimated_chars}")
     print(f"prompt_size_tokens_estimate: {bundle.estimated_tokens}")
     print(f"included_payload_types: {', '.join(included_payload_types) or 'none'}")
@@ -798,15 +1075,48 @@ def _print_full_context_pack_preview(bundle: Any, manifest: Any, max_preview_cha
         print("[preview complete; no raw upstream data was loaded]")
 
 
-def _print_full_context_analyze_dry_run(manifest: Any, analysis_mode: str) -> None:
+def _print_full_context_analyze_dry_run(
+    manifest: Any,
+    analysis_mode: str,
+    *,
+    batch_count: int = 0,
+    planned_batch_count: int = 0,
+    max_batches: int | None = None,
+    warnings: list[str] | tuple[str, ...] = (),
+    run_db_id: int | None = None,
+    cache_reused: int = 0,
+) -> None:
     print("Full Context Analyze Dry Run")
     print(f"profile_id: {manifest.profile_id}")
-    print(f"date_range: {manifest.date_from}..{manifest.date_to}")
+    print(f"date_range: {_full_context_date_range_label(manifest)}")
     print(f"analysis_mode: {analysis_mode}")
     print(f"recommended_mode: {manifest.recommended_mode}")
+    print("manifest summary:")
+    print(f"- line_count: {manifest.line_count}")
+    print(f"- note_count: {manifest.note_count}")
+    print(f"- media_count: {manifest.media_count}")
+    print(f"- face_count: {manifest.face_count}")
+    print(f"- location_count: {manifest.location_count}")
     print(f"estimated_tokens: {manifest.estimated_tokens}")
+    print(f"batch_count: {batch_count}")
+    print(f"planned_batch_count: {planned_batch_count}")
+    if max_batches is not None:
+        print(f"max_batches_per_run: {max_batches}")
+    print(f"cache_reused_batches: {cache_reused}")
+    if run_db_id is not None:
+        print(f"full_analysis_run_id: {run_db_id}")
+    if warnings:
+        print("warnings:")
+        for warning in warnings:
+            print(f"- {warning}")
     print("llm_calls: 0")
-    print("note: dry-run true; local LLM was not called and no raw upstream data was loaded.")
+    print("note: dry-run true; local LLM was not called and raw payload was not printed.")
+
+
+def _full_context_date_range_label(manifest: Any) -> str:
+    if getattr(manifest, "date_from", None) is None and getattr(manifest, "date_to", None) is None:
+        return "all"
+    return f"{manifest.date_from}..{manifest.date_to}"
 
 
 def _print_full_context_analysis_result(synthesis: Any) -> None:
