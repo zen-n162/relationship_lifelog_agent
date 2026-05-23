@@ -23,6 +23,7 @@ from relationship_lifelog_agent.full_context.types import FullDataManifest
 from relationship_lifelog_agent.llm.local_client import LocalLlmClient
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
 from relationship_lifelog_agent.privacy.raw_payload_policy import from_config as raw_payload_policy_from_config
+from relationship_lifelog_agent.verification.full_answer_verifier import verify_final_answer
 
 
 PRIVATE_FULL_MODES = frozenset({"private_full_range", "private_full_corpus"})
@@ -167,6 +168,26 @@ def run_agent(
             )
     final_run = replace(run, status="succeeded")
     answer = _compose_runtime_answer(final_run)
+    verification_report = verify_final_answer(
+        answer,
+        manifest=context.get("manifest"),
+        observations=final_run.observations,
+        date_from=context.get("date_from"),
+        date_to=context.get("date_to"),
+        evidence_refs=_runtime_evidence_refs(final_run),
+        computed_facts=_runtime_computed_facts(final_run),
+        mode=context["settings"].app.mode,
+    )
+    answer = verification_report.corrected_answer or answer
+    final_run = replace(
+        final_run,
+        observations=final_run.observations.add(
+            task_id="verify_answer",
+            observation_type="final_answer_verification",
+            summary="ok" if verification_report.ok else "issues_found",
+            data=verification_report.to_dict(),
+        ),
+    )
     updated_state = ConversationState(
         active_profile_id=context.get("profile_id") or state.active_profile_id,
         active_profile_name=context.get("profile_name") or state.active_profile_name,
@@ -389,6 +410,7 @@ def _execute_task(run: AgentRun, node: TaskNode, context: dict[str, Any]) -> tup
 
 
 def _finish_run(run: AgentRun, context: dict[str, Any]) -> AgentRun:
+    verification = run.observations.latest("final_answer_verification")
     debug_info = {
         "runtime": "private_full",
         "analysis_mode": run.analysis_mode,
@@ -406,8 +428,38 @@ def _finish_run(run: AgentRun, context: dict[str, Any]) -> AgentRun:
         "task_graph": run.task_graph.to_debug_dict(),
         "observations": run.observations.to_debug_list(),
         "answerability": context.get("answerability", {}),
+        "verification": verification.data if verification else {},
     }
     return replace(run, debug_info=debug_info)
+
+
+def _runtime_evidence_refs(run: AgentRun) -> tuple[str, ...]:
+    refs: list[str] = []
+    for observation in run.observations.observations:
+        refs.extend(observation.source_refs)
+        for key in ("source_refs", "relevant_evidence_refs", "evidence_refs"):
+            value = observation.data.get(key)
+            if isinstance(value, str):
+                refs.append(value)
+            elif isinstance(value, (list, tuple)):
+                refs.extend(str(item) for item in value if item)
+    return tuple(dict.fromkeys(refs))
+
+
+def _runtime_computed_facts(run: AgentRun) -> dict[str, int]:
+    manifest = run.observations.latest("manifest")
+    loaded = run.observations.latest("full_data_loaded")
+    facts: dict[str, int] = {}
+    if manifest:
+        for key in ("line_count", "note_count", "media_count", "face_count", "location_count"):
+            value = manifest.data.get(key)
+            if isinstance(value, int):
+                facts[key] = value
+    if loaded:
+        for key, value in loaded.data.items():
+            if isinstance(value, int):
+                facts[key] = value
+    return facts
 
 
 def _compose_runtime_answer(run: AgentRun) -> str:
