@@ -31,6 +31,12 @@ ui:
   show_debug_by_default: false
   show_evidence_collapsed: true
   max_evidence_items: 8
+  stream_progress: true
+  show_progress_messages: true
+  show_tool_usage: true
+  show_safe_reasoning_summary: true
+  show_raw_llm_thinking: false
+  progress_messages_collapsed_when_done: true
 
 relationship:
   default_profile_id: 1

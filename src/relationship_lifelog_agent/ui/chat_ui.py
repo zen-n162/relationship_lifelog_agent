@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections.abc import Iterator
 from typing import Any
 
 from relationship_lifelog_agent.agent.executor import ChatAnswer, ReviewTarget
-from relationship_lifelog_agent.agent.reasoning_orchestrator import answer_with_reasoning
+from relationship_lifelog_agent.agent.reasoning_orchestrator import answer_with_reasoning, stream_answer
+from relationship_lifelog_agent.agent.streaming import AgentStreamEvent
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
@@ -134,8 +136,8 @@ def build_chat_ui(settings: Settings) -> Any:
             selected_mode: str,
             show_debug: bool,
             current_conversation_state: dict[str, object] | None,
-        ) -> tuple[str, list[dict[str, str]], Any, str, list[dict[str, object]], dict[str, object]]:
-            updated_history, chat_answer, updated_state = build_ui_chat_turn(
+        ) -> Iterator[tuple[str, list[dict[str, Any]], Any, str, list[dict[str, object]], dict[str, object]]]:
+            yield from build_ui_chat_turn_stream(
                 user_message,
                 history,
                 base_settings=settings,
@@ -147,17 +149,6 @@ def build_chat_ui(settings: Settings) -> Any:
                 mode=selected_mode,
                 show_debug=show_debug,
                 conversation_state=current_conversation_state,
-            )
-            if chat_answer is None:
-                return "", updated_history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], updated_state
-            target_state = _target_state(chat_answer.review_targets)
-            return (
-                "",
-                updated_history,
-                gr.update(choices=_target_choices(chat_answer.review_targets), value=_first_target_value(chat_answer.review_targets)),
-                _targets_markdown(chat_answer.review_targets),
-                target_state,
-                updated_state,
             )
 
         send.click(
@@ -268,6 +259,88 @@ def build_ui_chat_turn(
         chat_answer,
         getattr(chat_answer, "_conversation_state", conversation_state or {}),
     )
+
+
+def build_ui_chat_turn_stream(
+    user_message: Any,
+    history: list[Any] | None,
+    *,
+    base_settings: Settings,
+    selected_backend: str,
+    selected_profile: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    post_conflict_window_days: int | float | None,
+    mode: str,
+    show_debug: bool = False,
+    conversation_state: dict[str, object] | None = None,
+) -> Iterator[tuple[str, list[dict[str, Any]], Any, str, list[dict[str, object]], dict[str, object]]]:
+    import gradio as gr
+
+    normalized_history = _normalize_history(history)
+    question = _coerce_message_text(user_message)
+    if not question:
+        yield "", normalized_history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], conversation_state or {}
+        return
+    settings = _settings_for_ui(base_settings, selected_backend, post_conflict_window_days)
+    profile_id = parse_profile_choice(selected_profile)
+    running_history: list[dict[str, Any]] = [*normalized_history, {"role": "user", "content": question}]
+    if not settings.ui.stream_progress or not settings.ui.show_progress_messages:
+        history_once, chat_answer, updated_state = build_ui_chat_turn(
+            question,
+            normalized_history,
+            base_settings=base_settings,
+            selected_backend=selected_backend,
+            selected_profile=selected_profile,
+            date_from=date_from,
+            date_to=date_to,
+            post_conflict_window_days=post_conflict_window_days,
+            mode=mode,
+            show_debug=show_debug,
+            conversation_state=conversation_state,
+        )
+        if chat_answer is None:
+            yield "", history_once, gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], updated_state
+            return
+        yield (
+            "",
+            history_once,
+            gr.update(choices=_target_choices(chat_answer.review_targets), value=_first_target_value(chat_answer.review_targets)),
+            _targets_markdown(chat_answer.review_targets),
+            _target_state(chat_answer.review_targets),
+            updated_state,
+        )
+        return
+
+    latest_state = conversation_state or {}
+    latest_targets: tuple[ReviewTarget, ...] = ()
+    for event in stream_answer(
+        question,
+        mode=mode,
+        settings=settings,
+        selected_profile_id=profile_id,
+        date_from=_clean_text(date_from),
+        date_to=_clean_text(date_to),
+        post_conflict_window_days=_safe_window_days(post_conflict_window_days),
+        state=conversation_state,
+        show_debug=show_debug,
+    ):
+        if event.debug_only and not show_debug:
+            continue
+        if event.kind == "final_answer":
+            latest_state = dict(event.metadata.get("conversation_state") or latest_state)
+            latest_targets = _review_targets_from_metadata(event.metadata.get("review_targets"))
+            running_history.append({"role": "assistant", "content": event.message})
+        elif _show_progress_event(event, settings):
+            running_history.append(_event_chat_message(event))
+        yield (
+            "",
+            _copy_history(running_history),
+            gr.update(choices=_target_choices(latest_targets), value=_first_target_value(latest_targets)),
+            _targets_markdown(latest_targets),
+            _target_state(latest_targets),
+            latest_state,
+        )
 
 
 def build_ui_chat_answer(
@@ -411,6 +484,50 @@ def _normalize_history(history: list[Any] | None) -> list[dict[str, str]]:
         if content:
             messages.append({"role": "user", "content": content})
     return messages
+
+
+def _event_chat_message(event: AgentStreamEvent) -> dict[str, Any]:
+    content = event.message
+    return {"role": "assistant", "content": content, "metadata": event.safe_metadata()}
+
+
+def _copy_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    copied: list[dict[str, Any]] = []
+    for item in history:
+        new_item = dict(item)
+        if isinstance(new_item.get("metadata"), dict):
+            new_item["metadata"] = dict(new_item["metadata"])
+        copied.append(new_item)
+    return copied
+
+
+def _show_progress_event(event: AgentStreamEvent, settings: Settings) -> bool:
+    if event.kind in {"tool_start", "tool_done"} and not settings.ui.show_tool_usage:
+        return False
+    if event.kind in {"progress", "thought"} and not settings.ui.show_safe_reasoning_summary:
+        return False
+    return event.kind in {"progress", "thought", "tool_start", "tool_done", "llm_start", "llm_done", "warning", "error"}
+
+
+def _review_targets_from_metadata(value: object) -> tuple[ReviewTarget, ...]:
+    if not isinstance(value, list):
+        return ()
+    targets: list[ReviewTarget] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            targets.append(
+                ReviewTarget(
+                    event_id=int(item["event_id"]),
+                    label=str(item.get("label") or ""),
+                    event_type=str(item.get("event_type") or ""),
+                    review_status=str(item.get("review_status") or ""),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(targets)
 
 
 def _latest_user_message(history: list[Any] | None) -> str:

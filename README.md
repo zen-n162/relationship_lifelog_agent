@@ -46,6 +46,13 @@ hidden settings accordion lets you choose `mock` or `upstream_readonly`, target
 profile, date range, post-conflict window days, private/public mode, and debug
 output. Debug output is off by default.
 
+While a question is running, the UI streams safe progress messages such as
+question understanding, manual profile checks, information needs, read-only
+tool use, evidence filtering, aggregation, and safety checks. These messages are
+tool usage summaries, not raw chain-of-thought. They never include raw LINE
+text, raw note text, exact GPS, face data, image paths, private paths, or raw
+LLM prompts.
+
 When an answer includes relationship DB candidates, the minimal review accordion
 lets you save `verify`, `reject`, `mark_as_misunderstanding`, `mark_as_joke`,
 `mark_as_reconciled`, or `needs_reanalysis`. Review history is stored in

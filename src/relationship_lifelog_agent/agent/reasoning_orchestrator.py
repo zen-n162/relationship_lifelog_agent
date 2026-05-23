@@ -13,6 +13,7 @@ from relationship_lifelog_agent.agent.information_needs import InformationNeed
 from relationship_lifelog_agent.agent.profile_resolver import ProfileResolution, resolve_profile
 from relationship_lifelog_agent.agent.query_planner import ConversationQueryPlan, build_conversation_query_plan
 from relationship_lifelog_agent.agent.question_understanding import QuestionFrame, understand_question
+from relationship_lifelog_agent.agent.streaming import AgentStreamEvent
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.llm.local_client import LocalLlmClient
 from relationship_lifelog_agent.llm.usage import LlmUsageTrace
@@ -30,6 +31,141 @@ class ChatResponse:
     conversation_state: ConversationState
     review_targets: tuple[ReviewTarget, ...] = ()
     debug_info: dict[str, Any] | None = None
+
+
+def stream_answer(
+    question: str,
+    *,
+    settings: Settings,
+    mode: str = "private",
+    selected_profile_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    post_conflict_window_days: int | float | None = None,
+    state: ConversationState | dict[str, Any] | None = None,
+    memory: object | None = None,
+    show_debug: bool = False,
+    llm_client: LocalLlmClient | None = None,
+):
+    current_state = ConversationState.from_value(state)
+    usage = LlmUsageTrace.from_settings(settings.llm)
+    client = llm_client or LocalLlmClient(settings.llm)
+
+    yield _event("progress", "質問を整理しています", "質問のintent、対象profile、日付範囲、省略参照を安全に整理します。")
+    if _stage_llm_enabled(settings, "question_understanding", client):
+        yield _event("llm_start", "local LLMで質問を理解しています", _llm_message(settings, "質問のintentと必要情報をJSON形式で整理します。"))
+    frame = understand_question(question, current_state, settings=settings, llm_client=client, usage=usage)
+    frame = _override_frame_dates(frame, date_from=date_from, date_to=date_to)
+    yield _event(
+        "progress",
+        "質問を整理しました",
+        f"intent={frame.primary_intent}, requested_output={frame.requested_output} として扱います。",
+        status="done",
+    )
+    yield from _llm_stage_events(usage, "question_understanding", "質問理解")
+
+    yield _event("progress", "会話文脈を確認しています", "直前の観測日や選択中profileを確認します。")
+    context_message = "直前回答の観測日を参照できます。" if current_state.last_observed_dates else "直前回答の観測日はまだありません。"
+    yield _event("progress", "会話文脈を確認しました", context_message, status="done")
+
+    yield _event("progress", "手動profileを確認しています", "AI推定ではなく、保存済みの手動profileだけを使います。")
+    profile_resolution = resolve_profile(settings, frame, selected_profile_id=selected_profile_id)
+    profile_message = (
+        f"profile_id={profile_resolution.profile_id} を使います。"
+        if profile_resolution.profile_id
+        else f"profile status={profile_resolution.status} です。"
+    )
+    yield _event("progress", "手動profileを確認しました", profile_message, status="done")
+
+    yield _event("progress", "回答に必要な情報を確認しています", "profile、speaker、adapter、日付範囲、根拠の有無を確認します。")
+    if _stage_llm_enabled(settings, "information_needs", client):
+        yield _event("llm_start", "local LLMで必要情報を整理しています", _llm_message(settings, "必要情報の候補だけをJSON形式で整理します。"))
+    answerability = check_answerability(frame, profile_resolution, settings, llm_client=client, usage=usage)
+    yield _event(
+        "progress",
+        "回答に必要な情報を確認しました",
+        f"answerability={answerability.status}, missing_needs={len(answerability.missing_needs)}",
+        status="done",
+    )
+    yield from _llm_stage_events(usage, "information_needs", "必要情報整理")
+
+    yield _event("progress", "検索方針を作成しています", "使えるtoolとEvidence Contractを確認します。")
+    if _stage_llm_enabled(settings, "query_planning", client):
+        yield _event("llm_start", "local LLMで検索計画を作成しています", _llm_message(settings, "許可済みtoolだけを使う検索計画をJSON形式で作ります。"))
+    plan = build_conversation_query_plan(frame, answerability, settings=settings, llm_client=client, usage=usage)
+    yield _event("progress", "実行できるtoolか検証しました", f"plan_steps={len(plan.plan_steps)}", status="done")
+    yield from _llm_stage_events(usage, "query_planning", "検索計画")
+
+    if not answerability.can_execute:
+        yield _event("warning", "不足情報があります", "検索は実行せず、必要な手動設定を案内します。", status="done")
+        answer = _append_llm_usage_summary(_missing_information_answer(frame, profile_resolution, answerability, mode=mode), usage)
+        response_state = _updated_state(
+            current_state,
+            frame=frame,
+            profile_resolution=profile_resolution,
+            answerability=answerability,
+            plan=plan,
+            answer_markdown=answer,
+            review_targets=(),
+        )
+        response = _response(answer, frame, answerability, plan, response_state, (), mode=mode, show_debug=show_debug, usage=usage)
+        yield _final_event(response)
+        return
+
+    yield _event("tool_start", "LINE記録をread-onlyで検索しています", "対象speakerとself speakerを使い、喧嘩・すれ違い候補を安全に探します。")
+    yield _event("tool_start", "日付近傍のメモを確認しています", "日付不明・関係性が低いnoteは通常根拠から除外します。")
+    yield _event("progress", "件数を集計しています", "中程度以上の喧嘩候補と軽いすれ違い候補を分けてPythonで集計します。")
+    chat_answer = answer_chat(
+        frame.raw_question,
+        mode=mode,
+        memory=memory,
+        settings=settings,
+        profile_id=profile_resolution.profile_id,
+        date_from=frame.date_from,
+        date_to=frame.date_to,
+        post_conflict_window_days=post_conflict_window_days,
+    )
+    yield _event("tool_done", "LINE記録の検索が完了しました", _candidate_summary(chat_answer.text), status="done")
+    yield _event("tool_done", "補助根拠の確認が完了しました", "関係性・日付近傍・根拠強度で通常表示の根拠を絞りました。", status="done")
+    yield _event("progress", "根拠の強さを確認しています", "Evidence Contractに合わない根拠や弱すぎる根拠を通常回答から外します。", status="done")
+
+    if _stage_llm_enabled(settings, "answer_composition", client):
+        yield _event("llm_start", "local LLMで回答文を整えています", _llm_message(settings, "Pythonで確定した件数・日付を変えずに回答文だけを整えます。"))
+    person_names = [profile_resolution.profile.profile_name] if profile_resolution.profile else None
+    composed = compose_answer_with_llm(
+        chat_answer.text,
+        question=frame.raw_question,
+        settings=settings,
+        llm_client=client,
+        usage=usage,
+        mode=mode,
+        person_names=person_names,
+    )
+    yield from _llm_stage_events(usage, "answer_composition", "回答文整形")
+    yield _event("progress", "安全チェックをしています", "禁止表現、public mode redaction、過度な断定がないか確認します。")
+    answer = _append_reasoning_sections(composed, answerability, plan, usage=usage, mode=mode, show_debug=show_debug)
+    yield _event("progress", "安全チェックが完了しました", "最終回答はSafety/Privacy Guardを通過しました。", status="done")
+    response_state = _updated_state(
+        current_state,
+        frame=frame,
+        profile_resolution=profile_resolution,
+        answerability=answerability,
+        plan=plan,
+        answer_markdown=answer,
+        review_targets=chat_answer.review_targets,
+    )
+    response = _response(
+        answer,
+        frame,
+        answerability,
+        plan,
+        response_state,
+        chat_answer.review_targets,
+        mode=mode,
+        show_debug=show_debug,
+        usage=usage,
+    )
+    yield _final_event(response)
 
 
 def answer_with_reasoning(
@@ -267,3 +403,79 @@ def _clean_text(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _event(
+    kind: str,
+    title: str,
+    message: str,
+    *,
+    status: str = "pending",
+    debug_only: bool = False,
+    metadata: dict[str, Any] | None = None,
+) -> AgentStreamEvent:
+    return AgentStreamEvent(
+        kind=kind,  # type: ignore[arg-type]
+        title=title,
+        message=sanitize_answer(message),
+        status=status,  # type: ignore[arg-type]
+        safe_for_user=True,
+        debug_only=debug_only,
+        metadata=metadata or {},
+    )
+
+
+def _stage_llm_enabled(settings: Settings, stage: str, client: LocalLlmClient) -> bool:
+    if not (settings.llm.enabled and settings.llm.model and client.is_configured()):
+        return False
+    return bool(getattr(settings.llm, f"use_for_{stage}", False))
+
+
+def _llm_message(settings: Settings, message: str) -> str:
+    return f"{settings.llm.model or 'local model'} を使って、{message} 件数や日付はPythonで確認します。"
+
+
+def _llm_stage_events(usage: LlmUsageTrace, stage: str, label: str):
+    backend = getattr(usage, f"{stage}_backend", "rule")
+    reason_prefix = stage + ": "
+    stage_reasons = [reason.removeprefix(reason_prefix) for reason in usage.fallback_reasons if reason.startswith(reason_prefix)]
+    if backend == "llm":
+        yield _event("llm_done", f"local LLMの{label}が完了しました", f"{label}に成功しました。確定処理はPython側で続けます。", status="done")
+    elif stage_reasons:
+        yield _event("warning", f"{label}はrule-basedに切り替えました", "LLM出力の検証に失敗したため、安全なrule-based fallbackで続行します。", status="done")
+
+
+def _candidate_summary(answer_markdown: str) -> str:
+    fields = ("conflict_candidates", "minor_misunderstanding_candidates", "total_candidates")
+    values: list[str] = []
+    for field in fields:
+        match = re.search(rf"- {re.escape(field)}: ([^\n]+)", answer_markdown)
+        if match:
+            values.append(f"{field}={match.group(1).strip()}")
+    if values:
+        return " / ".join(values)
+    return "候補件数を集計しました。"
+
+
+def _final_event(response: ChatResponse) -> AgentStreamEvent:
+    review_targets = [
+        {
+            "event_id": target.event_id,
+            "label": target.label,
+            "event_type": target.event_type,
+            "review_status": target.review_status,
+        }
+        for target in response.review_targets
+    ]
+    return AgentStreamEvent(
+        kind="final_answer",
+        title="回答を作成しました",
+        message=response.answer_markdown,
+        status="done",
+        safe_for_user=True,
+        metadata={
+            "conversation_state": response.conversation_state.to_dict(),
+            "review_targets": review_targets,
+            "debug_info": response.debug_info,
+        },
+    )

@@ -322,6 +322,14 @@
           </p>
         </article>
         <article class="card">
+          <h3>安全な進捗を表示</h3>
+          <p>
+            Chat UIは処理中に質問整理、profile確認、必要情報確認、read-only tool使用、
+            根拠filtering、集計、安全checkを段階的に表示します。
+            表示するのはsafe progress summaryであり、raw chain-of-thoughtやraw promptではありません。
+          </p>
+        </article>
+        <article class="card">
           <h3>対象profileを手動設定</h3>
           <p>
             relationship label、対象側person / LINE speaker / speaker group source ID、
@@ -542,7 +550,7 @@
             <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
-              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、手動profile保存、最小review actionを含む折りたたみ設定を実装済みです。</td>
+              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、手動profile保存、最小review actionを含む折りたたみ設定を実装済みです。処理中はsafe progress messageをstream表示します。</td>
             </tr>
           </tbody>
         </table>

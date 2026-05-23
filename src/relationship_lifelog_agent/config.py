@@ -47,6 +47,12 @@ class UiSettings:
     show_debug_by_default: bool = False
     show_evidence_collapsed: bool = True
     max_evidence_items: int = 8
+    stream_progress: bool = True
+    show_progress_messages: bool = True
+    show_tool_usage: bool = True
+    show_safe_reasoning_summary: bool = True
+    show_raw_llm_thinking: bool = False
+    progress_messages_collapsed_when_done: bool = True
 
 
 @dataclass(frozen=True)
@@ -143,6 +149,8 @@ def validate_local_safety(settings: Settings) -> None:
         raise ValueError("Raw upstream data must not be copied.")
     if settings.adapter.backend == "upstream_readonly" and not settings.adapter.allow_sqlite_readonly:
         raise ValueError("upstream_readonly requires allow_sqlite_readonly=true.")
+    if settings.ui.show_raw_llm_thinking:
+        raise ValueError("Raw LLM thinking must not be shown.")
     if settings.llm.provider not in {"local", "ollama"}:
         raise ValueError("LLM provider must be local or ollama.")
     if settings.llm.enabled and not _is_local_llm_url(settings.llm.base_url):
