@@ -59,6 +59,8 @@ class UiSettings:
 class RelationshipSettings:
     default_profile_id: int = 1
     post_conflict_window_days: int = 14
+    surrounding_media_days_before: int = 1
+    surrounding_media_days_after: int = 1
     conflict_min_confidence: float = 0.45
     evidence_min_strength_for_answer: float = 0.35
     require_manual_partner_label: bool = True

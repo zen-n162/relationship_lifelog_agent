@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from datetime import date, timedelta
 from typing import Any
 
 from relationship_lifelog_agent.adapters.types import (
@@ -20,8 +20,14 @@ from relationship_lifelog_agent.agent.memory import build_memory
 from relationship_lifelog_agent.agent.planner import AdapterCall, QueryPlan, build_plan
 from relationship_lifelog_agent.agent.router import route_question
 from relationship_lifelog_agent.analytics.evidence_scoring import AnalysisResult, mean
+from relationship_lifelog_agent.analytics.llm_cache import source_window_hash
+from relationship_lifelog_agent.analytics.llm_line_window import analyze_line_window_with_llm
+from relationship_lifelog_agent.analytics.llm_media_summary import MediaDaySummary, summarize_media_day_with_llm
+from relationship_lifelog_agent.analytics.llm_note_window import analyze_note_window_with_llm
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.db.repository import RelationshipRepository
+from relationship_lifelog_agent.llm.local_client import LocalLlmClient
+from relationship_lifelog_agent.llm.usage import LlmUsageTrace
 from relationship_lifelog_agent.profiles import (
     ProfileContext,
     is_relationship_profile_question,
@@ -66,6 +72,8 @@ def answer_question(
     date_from: str | None = None,
     date_to: str | None = None,
     post_conflict_window_days: int | float | None = None,
+    llm_client: LocalLlmClient | None = None,
+    usage: LlmUsageTrace | None = None,
 ) -> str:
     return answer_chat(
         question,
@@ -76,6 +84,8 @@ def answer_question(
         date_from=date_from,
         date_to=date_to,
         post_conflict_window_days=post_conflict_window_days,
+        llm_client=llm_client,
+        usage=usage,
     ).text
 
 
@@ -88,6 +98,8 @@ def answer_chat(
     date_from: str | None = None,
     date_to: str | None = None,
     post_conflict_window_days: int | float | None = None,
+    llm_client: LocalLlmClient | None = None,
+    usage: LlmUsageTrace | None = None,
 ) -> ChatAnswer:
     route = route_question(question)
     profile = _resolve_profile(settings, profile_id)
@@ -106,6 +118,8 @@ def answer_chat(
         date_from=clean_date_from,
         date_to=clean_date_to,
         post_conflict_window_days=post_conflict_window_days,
+        llm_client=llm_client,
+        usage=usage,
     )
     person_names = [profile.profile_name] if profile else None
     return ChatAnswer(
@@ -123,6 +137,8 @@ def execute_plan(
     date_from: str | None = None,
     date_to: str | None = None,
     post_conflict_window_days: int | float | None = None,
+    llm_client: LocalLlmClient | None = None,
+    usage: LlmUsageTrace | None = None,
 ) -> AnalysisResult:
     results = _run_adapter_calls(plan, memory, mode=mode, profile=profile)
     results["_backend"] = [_backend(memory)]
@@ -146,7 +162,19 @@ def execute_plan(
             )
         ]
     intent = plan.primary_intent
-    if intent == "conflict_frequency":
+    if intent == "conflict_dates_with_surrounding_media":
+        result = _conflict_dates_with_surrounding_media(
+            results,
+            memory,
+            mode=mode,
+            profile=profile,
+            settings=settings,
+            llm_client=llm_client,
+            usage=usage,
+        )
+    elif intent == "conflict_date_lookup":
+        result = _conflict_timeline(results)
+    elif intent == "conflict_frequency":
         result = _conflict_frequency(results)
     elif intent == "conflict_timeline":
         result = _conflict_timeline(results)
@@ -329,6 +357,125 @@ def _post_conflict_activity(results: dict[str, list[Any]]) -> AnalysisResult:
             "相手の気持ちは記録からは断定できません。",
             *_review_cautions([*conflicts, *displayed_outings], results),
         ],
+    )
+
+
+def _conflict_dates_with_surrounding_media(
+    results: dict[str, list[Any]],
+    memory: object,
+    *,
+    mode: str,
+    profile: ProfileContext | None,
+    settings: Settings | None,
+    llm_client: LocalLlmClient | None,
+    usage: LlmUsageTrace | None,
+) -> AnalysisResult:
+    conflicts = _rank_events(_relationship_event_candidates(results))
+    review_aggregate = _review_aggregate(conflicts, results)
+    if not conflicts:
+        return AnalysisResult(
+            intent="conflict_dates_with_surrounding_media",
+            summary=_no_candidate_summary(_backend_from_results(results), "喧嘩・軽いすれ違い候補日"),
+            aggregate={
+                "conflict_candidates": 0,
+                "minor_misunderstanding_candidates": 0,
+                "total_candidates": 0,
+                "media_days_checked": 0,
+                "media_items_in_exact_window": 0,
+                **review_aggregate,
+            },
+            confidence=0.3,
+            evidence_strength=0.0,
+            cautions=[
+                "候補日がないため、前後日の写真summaryは作っていません。",
+                "喧嘩は候補として扱い、断定しません。",
+            ],
+        )
+
+    before_days = _surrounding_days_before(settings)
+    after_days = _surrounding_days_after(settings)
+    all_media: list[MediaEvidence] = []
+    all_line_window: list[LineEvidence] = []
+    included_notes: list[NoteEvidence | ThoughtEvidence] = []
+    media_summaries: list[MediaDaySummary] = []
+    line_analysis_summaries: list[str] = []
+    examples: list[str] = []
+    cautions: list[str] = [
+        "喧嘩・すれ違いは候補として扱い、断定しません。",
+        "写真だけでは仲直りや一緒にいたことは断定できません。",
+        "mediaは候補日の前後だけに厳密に限定して確認しています。",
+    ]
+
+    for conflict in conflicts[:5]:
+        window_start, window_end = _surrounding_window(conflict.date, before_days=before_days, after_days=after_days)
+        line_window = _get_line_window(memory, window_start, window_end, mode=mode)
+        all_line_window.extend(line_window)
+        line_analysis = analyze_line_window_with_llm(
+            profile,
+            line_window,
+            (window_start, window_end),
+            llm_client if _llm_window_enabled(settings, "line") else None,
+            mode=mode,
+            usage=usage,
+        )
+        line_analysis_summaries.append(f"{conflict.date}: {line_analysis.summary}")
+        notes = _get_notes_window(memory, window_start, window_end, mode=mode)
+        note_analysis = analyze_note_window_with_llm(
+            notes,
+            (window_start, window_end),
+            profile,
+            llm_client if _llm_window_enabled(settings, "note") else None,
+            mode=mode,
+            usage=usage,
+        )
+        included_ids = {analysis.source_id for analysis in note_analysis if analysis.include_as_supporting_evidence}
+        included_notes.extend([note for note in notes if note.source_id in included_ids])
+        for day in _days_between(window_start, window_end):
+            day_media = _get_media_by_exact_date_range(memory, day, day, profile=profile, mode=mode)
+            all_media.extend(day_media)
+            summary = _cached_media_day_summary(
+                day,
+                day_media,
+                profile=profile,
+                settings=settings,
+                llm_client=llm_client if _llm_window_enabled(settings, "media") else None,
+                mode=mode,
+                usage=usage,
+            )
+            media_summaries.append(summary)
+            examples.append(f"{day}: {summary.summary}")
+
+    counts = Counter(event.event_type for event in conflicts)
+    observed_dates = tuple(dict.fromkeys(event.date for event in conflicts))
+    summary_counts = _conflict_summary_counts(counts)
+    media_days_with_items = len({summary.date for summary in media_summaries if summary.has_media})
+    media_items_in_window = len({item.source_id for item in all_media})
+    evidence = _evidence_items([*_event_evidence_for_display(conflicts), *all_line_window, *included_notes, *all_media])
+    return AnalysisResult(
+        intent="conflict_dates_with_surrounding_media",
+        summary=f"現在の記録では、{summary_counts}。候補日は {', '.join(observed_dates)} です。",
+        aggregate={
+            "conflict_candidates": counts["conflict"],
+            "minor_misunderstanding_candidates": counts["minor_misunderstanding"],
+            "total_candidates": len(conflicts),
+            "observed_dates": ", ".join(observed_dates),
+            "surrounding_media_days_before": before_days,
+            "surrounding_media_days_after": after_days,
+            "media_days_checked": len(media_summaries),
+            "media_days_with_items": media_days_with_items,
+            "media_items_in_exact_window": media_items_in_window,
+            "line_window_analysis": " / ".join(line_analysis_summaries[:3]),
+            **review_aggregate,
+        },
+        examples=[
+            *[f"{event.date}: {_severity_label(event.severity)} - {event.summary}" for event in conflicts[:4]],
+            "写真から見た前後の日:",
+            *examples[:12],
+        ],
+        evidence=evidence,
+        confidence=mean([event.confidence for event in conflicts]),
+        evidence_strength=mean([event.evidence_strength for event in conflicts] + [item.evidence_strength for item in all_media]),
+        cautions=[*cautions, *_review_cautions(conflicts, results)],
     )
 
 
@@ -1039,6 +1186,184 @@ def _window_days_from_results(results: dict[str, list[Any]]) -> int:
         return max(1, int(values[0]))
     except (TypeError, ValueError):
         return 14
+
+
+def _surrounding_days_before(settings: Settings | None) -> int:
+    if settings is None:
+        return 1
+    return max(0, int(getattr(settings.relationship, "surrounding_media_days_before", 1)))
+
+
+def _surrounding_days_after(settings: Settings | None) -> int:
+    if settings is None:
+        return 1
+    return max(0, int(getattr(settings.relationship, "surrounding_media_days_after", 1)))
+
+
+def _surrounding_window(value: str, *, before_days: int, after_days: int) -> tuple[str, str]:
+    center = date.fromisoformat(value[:10])
+    return (
+        (center - timedelta(days=before_days)).isoformat(),
+        (center + timedelta(days=after_days)).isoformat(),
+    )
+
+
+def _days_between(date_from: str, date_to: str) -> list[str]:
+    current = date.fromisoformat(date_from)
+    end = date.fromisoformat(date_to)
+    days: list[str] = []
+    while current <= end:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def _get_line_window(memory: object, date_from: str, date_to: str, *, mode: str) -> list[LineEvidence]:
+    personal = getattr(memory, "personal", memory)
+    try:
+        items = personal.search_line(
+            "喧嘩 すれ違い 謝罪 不満 予定変更 仲直り 通常会話",
+            date_from=date_from,
+            date_to=date_to,
+            limit=80,
+            mode=mode,
+        )
+    except TypeError:
+        items = personal.search_line(
+            "喧嘩 すれ違い 謝罪 不満 予定変更 仲直り 通常会話",
+            date_from=date_from,
+            date_to=date_to,
+            limit=80,
+        )
+    return [item for item in items if isinstance(item, LineEvidence) and date_from <= item.date <= date_to]
+
+
+def _get_notes_window(memory: object, date_from: str, date_to: str, *, mode: str) -> list[NoteEvidence | ThoughtEvidence]:
+    notes_adapter = getattr(memory, "notes", memory)
+    try:
+        notes = notes_adapter.search_notes(
+            "いおり 関係 喧嘩 すれ違い 反省 不安 謝罪",
+            date_from=date_from,
+            date_to=date_to,
+            limit=50,
+            mode=mode,
+        )
+    except TypeError:
+        notes = notes_adapter.search_notes(
+            "いおり 関係 喧嘩 すれ違い 反省 不安 謝罪",
+            date_from=date_from,
+            date_to=date_to,
+            limit=50,
+        )
+    return [
+        item
+        for item in notes
+        if isinstance(item, (NoteEvidence, ThoughtEvidence)) and date_from <= item.date <= date_to and not _is_unknown_or_sentinel_date(item.date)
+    ]
+
+
+def _get_media_by_exact_date_range(
+    memory: object,
+    date_from: str,
+    date_to: str,
+    *,
+    profile: ProfileContext | None,
+    mode: str,
+) -> list[MediaEvidence]:
+    personal = getattr(memory, "personal", memory)
+    person_id = profile.person_source_id if profile else None
+    try:
+        media = personal.search_media(
+            "",
+            date_from=date_from,
+            date_to=date_to,
+            person_id=person_id,
+            limit=100,
+            mode=mode,
+        )
+    except TypeError:
+        media = personal.search_media(
+            "",
+            date_from=date_from,
+            date_to=date_to,
+            person_id=person_id,
+            limit=100,
+        )
+    return [item for item in media if isinstance(item, MediaEvidence) and date_from <= item.date <= date_to]
+
+
+def _cached_media_day_summary(
+    day: str,
+    media_items: list[MediaEvidence],
+    *,
+    profile: ProfileContext | None,
+    settings: Settings | None,
+    llm_client: LocalLlmClient | None,
+    mode: str,
+    usage: LlmUsageTrace | None,
+) -> MediaDaySummary:
+    model_name = llm_client.model if llm_client and llm_client.model else "rule"
+    prompt_version = "media-day-v1"
+    cache_payload = {
+        "date": day,
+        "media_refs": [
+            {
+                "ref": item.source_pointer,
+                "summary": item.summary[:120],
+                "date": item.date,
+            }
+            for item in media_items
+        ],
+        "profile_id": profile.id if profile else None,
+        "mode": mode,
+    }
+    cache_hash = source_window_hash(cache_payload)
+    repo = RelationshipRepository(settings.paths.relationship_db) if settings else None
+    if repo is not None:
+        cached = repo.get_llm_analysis_cache(
+            analysis_type="media_day_summary",
+            source_window_hash=cache_hash,
+            model_name=model_name or "rule",
+            prompt_version=prompt_version,
+        )
+        if cached and isinstance(cached.get("result"), dict):
+            return _media_day_summary_from_cache(cached["result"])
+    summary = summarize_media_day_with_llm(day, media_items, profile, llm_client, mode=mode, usage=usage)
+    if repo is not None:
+        repo.upsert_llm_analysis_cache(
+            analysis_type="media_day_summary",
+            source_window_hash=cache_hash,
+            model_name=model_name or "rule",
+            prompt_version=prompt_version,
+            result=asdict(summary),
+            confidence=summary.confidence,
+        )
+    return summary
+
+
+def _media_day_summary_from_cache(data: dict[str, Any]) -> MediaDaySummary:
+    return MediaDaySummary(
+        date=str(data.get("date") or ""),
+        has_media=bool(data.get("has_media")),
+        likely_activities=tuple(str(item) for item in data.get("likely_activities", []) if isinstance(item, str)),
+        place_summaries=tuple(str(item) for item in data.get("place_summaries", []) if isinstance(item, str)),
+        people_roles_present=tuple(str(item) for item in data.get("people_roles_present", []) if isinstance(item, str)),
+        summary=str(data.get("summary") or ""),
+        confidence=float(data.get("confidence") or 0.5),
+        evidence_media_refs=tuple(str(item) for item in data.get("evidence_media_refs", []) if isinstance(item, str)),
+        cautions=tuple(str(item) for item in data.get("cautions", []) if isinstance(item, str)),
+        backend=str(data.get("backend") or "cache"),
+    )
+
+
+def _llm_window_enabled(settings: Settings | None, analysis_type: str) -> bool:
+    if not settings or not settings.llm.enabled or not settings.llm.model:
+        return False
+    if analysis_type == "media":
+        return bool(settings.llm.use_for_answer_composition or settings.llm.use_for_query_planning)
+    if analysis_type in {"line", "note"}:
+        return bool(settings.llm.use_for_query_planning or settings.llm.use_for_information_needs)
+    return False
 
 
 def _resolve_window_days(settings: Settings | None, value: int | float | None) -> int:

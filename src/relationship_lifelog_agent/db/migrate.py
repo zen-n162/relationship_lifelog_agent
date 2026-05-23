@@ -46,6 +46,7 @@ def _ensure_updated_at_columns(conn: sqlite3.Connection) -> None:
         "interaction_metrics",
         "post_conflict_activities",
         "relationship_review_actions",
+        "llm_analysis_cache",
     )
     for table in tables:
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}

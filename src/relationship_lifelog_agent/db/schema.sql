@@ -159,6 +159,20 @@ CREATE TABLE IF NOT EXISTS relationship_review_actions (
   ))
 );
 
+CREATE TABLE IF NOT EXISTS llm_analysis_cache (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  analysis_type TEXT NOT NULL,
+  source_window_hash TEXT NOT NULL,
+  model_name TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (analysis_type, source_window_hash, model_name, prompt_version),
+  CHECK (confidence >= 0.0 AND confidence <= 1.0)
+);
+
 CREATE TRIGGER IF NOT EXISTS relationship_profiles_set_updated_at
 AFTER UPDATE ON relationship_profiles
 WHEN NEW.updated_at = OLD.updated_at
@@ -199,4 +213,11 @@ AFTER UPDATE ON relationship_review_actions
 WHEN NEW.updated_at = OLD.updated_at
 BEGIN
   UPDATE relationship_review_actions SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS llm_analysis_cache_set_updated_at
+AFTER UPDATE ON llm_analysis_cache
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE llm_analysis_cache SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
 END;

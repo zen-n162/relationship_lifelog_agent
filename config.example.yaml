@@ -41,6 +41,8 @@ ui:
 relationship:
   default_profile_id: 1
   post_conflict_window_days: 14
+  surrounding_media_days_before: 1
+  surrounding_media_days_after: 1
   conflict_min_confidence: 0.45
   evidence_min_strength_for_answer: 0.35
   require_manual_partner_label: true

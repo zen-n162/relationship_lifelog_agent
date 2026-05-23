@@ -112,8 +112,20 @@ def stream_answer(
         yield _final_event(response)
         return
 
-    yield _event("tool_start", "LINE記録をread-onlyで検索しています", "対象speakerとself speakerを使い、喧嘩・すれ違い候補を安全に探します。")
-    yield _event("tool_start", "日付近傍のメモを確認しています", "日付不明・関係性が低いnoteは通常根拠から除外します。")
+    if frame.primary_intent == "conflict_dates_with_surrounding_media":
+        before_days = getattr(settings.relationship, "surrounding_media_days_before", 1)
+        after_days = getattr(settings.relationship, "surrounding_media_days_after", 1)
+        yield _event("progress", "複合質問として整理しています", "喧嘩候補日を探し、その前後日の写真・メディアsummaryを別々に確認します。")
+        yield _event("tool_start", "喧嘩候補日を探しています", "LINE・保存済みeventから喧嘩候補と軽いすれ違い候補の日付をPythonで特定します。")
+        yield _event(
+            "tool_start",
+            f"候補日の前後{before_days}日/{after_days}日を写真から確認しています",
+            "post-conflict windowではなく、候補日ごとの厳密な日付範囲だけをread-onlyで確認します。",
+        )
+        yield _event("tool_start", "日別media summaryを作成しています", "写真パス、正確GPS、顔crop、embeddingは使わず、短いmetadataだけを要約します。")
+    else:
+        yield _event("tool_start", "LINE記録をread-onlyで検索しています", "対象speakerとself speakerを使い、喧嘩・すれ違い候補を安全に探します。")
+        yield _event("tool_start", "日付近傍のメモを確認しています", "日付不明・関係性が低いnoteは通常根拠から除外します。")
     yield _event("progress", "件数を集計しています", "中程度以上の喧嘩候補と軽いすれ違い候補を分けてPythonで集計します。")
     chat_answer = answer_chat(
         frame.raw_question,
@@ -124,9 +136,17 @@ def stream_answer(
         date_from=frame.date_from,
         date_to=frame.date_to,
         post_conflict_window_days=post_conflict_window_days,
+        llm_client=client,
+        usage=usage,
     )
-    yield _event("tool_done", "LINE記録の検索が完了しました", _candidate_summary(chat_answer.text), status="done")
-    yield _event("tool_done", "補助根拠の確認が完了しました", "関係性・日付近傍・根拠強度で通常表示の根拠を絞りました。", status="done")
+    if frame.primary_intent == "conflict_dates_with_surrounding_media":
+        observed_dates = _extract_observed_dates(chat_answer.text)
+        for observed_date in observed_dates[:3]:
+            yield _event("tool_done", f"{observed_date} の前後日を確認しました", "media summaryは候補日の前日・当日・翌日に限定しています。", status="done")
+        yield _event("tool_done", "LINEと写真の根拠を統合しました", _candidate_summary(chat_answer.text), status="done")
+    else:
+        yield _event("tool_done", "LINE記録の検索が完了しました", _candidate_summary(chat_answer.text), status="done")
+        yield _event("tool_done", "補助根拠の確認が完了しました", "関係性・日付近傍・根拠強度で通常表示の根拠を絞りました。", status="done")
     yield _event("progress", "根拠の強さを確認しています", "Evidence Contractに合わない根拠や弱すぎる根拠を通常回答から外します。", status="done")
 
     if _stage_llm_enabled(settings, "answer_composition", client):
@@ -213,6 +233,8 @@ def answer_with_reasoning(
         date_from=frame.date_from,
         date_to=frame.date_to,
         post_conflict_window_days=post_conflict_window_days,
+        llm_client=client,
+        usage=usage,
     )
     person_names = [profile_resolution.profile.profile_name] if profile_resolution.profile else None
     composed = compose_answer_with_llm(

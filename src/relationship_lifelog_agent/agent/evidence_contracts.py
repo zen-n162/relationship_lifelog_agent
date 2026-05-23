@@ -42,6 +42,24 @@ POST_CONFLICT_ACTIVITY_CONTRACT = EvidenceContract(
     excluded=("unverified person candidate", "exact GPS in public mode", "photo path in public mode"),
 )
 
+CONFLICT_WITH_SURROUNDING_MEDIA_CONTRACT = EvidenceContract(
+    intent="conflict_dates_with_surrounding_media",
+    primary=("line_message", "line_window_analysis", "reviewed_relationship_event"),
+    supporting=("media_day_summary", "media_caption", "date_near_relationship_note"),
+    excluded=(
+        "post_conflict_activity_window",
+        "media_outside_exact_window",
+        "undated_note",
+        "1970-01-01 note",
+        "unrelated_note",
+        "long_raw_note_text",
+        "long_raw_line_text",
+        "exact GPS",
+        "photo path",
+        "face data",
+    ),
+)
+
 DEFAULT_CONTRACT = EvidenceContract(
     intent="general_relationship_qa",
     primary=("reviewed_relationship_event", "line_message", "note"),
@@ -51,6 +69,8 @@ DEFAULT_CONTRACT = EvidenceContract(
 
 
 def evidence_contract_for_intent(intent: str) -> EvidenceContract:
+    if intent == "conflict_dates_with_surrounding_media":
+        return CONFLICT_WITH_SURROUNDING_MEDIA_CONTRACT
     if intent in {"conflict_frequency", "conflict_timeline"}:
         return CONFLICT_FREQUENCY_CONTRACT
     if intent == "post_conflict_activity":

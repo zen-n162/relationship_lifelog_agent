@@ -55,6 +55,12 @@ They are tool usage summaries, not raw chain-of-thought. They never include raw
 LINE text, raw note text, exact GPS, face data, image paths, private paths, or
 raw LLM prompts.
 
+Compound questions such as `喧嘩した日はいつ？その日の前後の日は写真から何をしていた？`
+are handled as `conflict_dates_with_surrounding_media`: the app first finds
+conflict or minor-misunderstanding candidate dates, then checks only the
+configured surrounding media window, defaulting to the previous day, same day,
+and next day. This path does not use the 14-day post-conflict activity window.
+
 When an answer includes relationship DB candidates, the minimal review accordion
 lets you save `verify`, `reject`, `mark_as_misunderstanding`, `mark_as_joke`,
 `mark_as_reconciled`, or `needs_reanalysis`. Review history is stored in

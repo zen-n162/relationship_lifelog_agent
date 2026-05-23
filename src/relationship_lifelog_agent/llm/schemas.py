@@ -77,6 +77,8 @@ QUERY_PLAN_SCHEMA = {
                 "required": ["tool_name", "purpose", "required", "params", "output_key"],
             },
         },
+        "compound_intent": {"type": ["string", "null"]},
+        "sub_plan": {"type": ["array", "null"], "items": {"type": "string"}},
         "expected_answer_shape": {"type": "string"},
     },
     "required": ["plan_steps", "expected_answer_shape"],
@@ -90,4 +92,92 @@ ANSWER_COMPOSITION_SCHEMA = {
         "answer_markdown": {"type": "string"},
     },
     "required": ["answer_markdown"],
+}
+
+
+LINE_WINDOW_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "is_conflict_candidate": {"type": "boolean"},
+        "is_minor_misunderstanding": {"type": "boolean"},
+        "severity": {"type": "integer", "minimum": 0, "maximum": 3},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "estimated_start_date": {"type": ["string", "null"]},
+        "estimated_end_date": {"type": ["string", "null"]},
+        "summary": {"type": "string"},
+        "evidence_message_refs": {"type": "array", "items": {"type": "string"}},
+        "evidence_excerpt_short": {"type": "array", "items": {"type": "string"}},
+        "is_joke_or_general_statement_possible": {"type": "boolean"},
+        "cautions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "is_conflict_candidate",
+        "is_minor_misunderstanding",
+        "severity",
+        "confidence",
+        "estimated_start_date",
+        "estimated_end_date",
+        "summary",
+        "evidence_message_refs",
+        "evidence_excerpt_short",
+        "is_joke_or_general_statement_possible",
+        "cautions",
+    ],
+}
+
+
+NOTE_WINDOW_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "relationship_relevance": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "date_relevance": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "own_thought_likelihood": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "lyrics_or_quote_likelihood": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "conflict_related": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "include_as_supporting_evidence": {"type": "boolean"},
+        "cautions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "relationship_relevance",
+        "date_relevance",
+        "own_thought_likelihood",
+        "lyrics_or_quote_likelihood",
+        "conflict_related",
+        "summary",
+        "confidence",
+        "include_as_supporting_evidence",
+        "cautions",
+    ],
+}
+
+
+MEDIA_DAY_SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "date": {"type": "string"},
+        "has_media": {"type": "boolean"},
+        "likely_activities": {"type": "array", "items": {"type": "string"}},
+        "place_summaries": {"type": "array", "items": {"type": "string"}},
+        "people_roles_present": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "evidence_media_refs": {"type": "array", "items": {"type": "string"}},
+        "cautions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "date",
+        "has_media",
+        "likely_activities",
+        "place_summaries",
+        "people_roles_present",
+        "summary",
+        "confidence",
+        "evidence_media_refs",
+        "cautions",
+    ],
 }

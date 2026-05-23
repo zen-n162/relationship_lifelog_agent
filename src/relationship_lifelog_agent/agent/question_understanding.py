@@ -13,6 +13,12 @@ from relationship_lifelog_agent.llm.usage import LlmUsageTrace
 
 
 ALLOWED_INTENTS = {
+    "conflict_dates_with_surrounding_media",
+    "conflict_date_lookup",
+    "surrounding_media_summary",
+    "line_window_analysis",
+    "note_window_analysis",
+    "media_day_summary",
     "conflict_frequency",
     "conflict_timeline",
     "post_conflict_activity",
@@ -167,9 +173,12 @@ def _frame_from_llm_data(question: str, data: dict[str, object], state: Conversa
     if not isinstance(raw_intents, list):
         raw_intent = data.get("intent")
         raw_intents = [raw_intent] if isinstance(raw_intent, str) else []
+    routed_intents = route_question(clean).intents
     intents = tuple(dict.fromkeys(str(intent) for intent in raw_intents if isinstance(intent, str) and intent in ALLOWED_INTENTS))
+    if "conflict_dates_with_surrounding_media" in routed_intents:
+        intents = tuple(dict.fromkeys(("conflict_dates_with_surrounding_media", *routed_intents, *intents)))
     if not intents:
-        intents = route_question(clean).intents
+        intents = routed_intents
     referenced = bool(data.get("referenced_previous_answer"))
     date_from = _clean_date_value(data.get("date_from"))
     date_to = _clean_date_value(data.get("date_to"))
@@ -242,6 +251,8 @@ def _allowed_requested_output(value: object) -> str | None:
         "line_detail_summary",
         "note_context_summary",
         "evidence_detail_summary",
+        "compound_conflict_media_summary",
+        "media_day_summary",
     }
     return text if text in allowed else None
 
@@ -270,6 +281,10 @@ def _references_previous_answer(text: str) -> bool:
 
 
 def _requested_output(text: str, intents: tuple[str, ...]) -> str:
+    if "conflict_dates_with_surrounding_media" in intents:
+        return "compound_conflict_media_summary"
+    if "surrounding_media_summary" in intents:
+        return "media_day_summary"
     if "line" in text or "LINE" in text or "ライン" in text:
         return "line_detail_summary"
     if "メモ" in text or "note" in text:

@@ -14,6 +14,13 @@ def route_question(question: str) -> RouteResult:
     text = question.strip().lower()
     intents: list[str] = []
 
+    if _has_any(text, "喧嘩", "けんか", "すれ違い", "もめ") and _has_any(text, "いつ", "日") and _has_any(text, "写真", "メディア", "前後"):
+        intents.extend(("conflict_dates_with_surrounding_media", "conflict_date_lookup", "surrounding_media_summary"))
+    elif _has_any(text, "喧嘩", "けんか", "すれ違い", "もめ") and _has_any(text, "いつ", "日"):
+        intents.append("conflict_date_lookup")
+    if _has_any(text, "写真", "メディア") and _has_any(text, "前後", "その日", "当日", "翌日", "前日"):
+        if "surrounding_media_summary" not in intents:
+            intents.append("surrounding_media_summary")
     if _has_any(text, "喧嘩", "けんか", "すれ違い", "もめ") and _has_any(text, "後", "あと", "どこ", "行っ"):
         intents.append("post_conflict_activity")
     if _has_any(text, "喧嘩", "けんか", "すれ違い", "もめ") and _has_any(text, "いつ", "時期", "タイムライン", "多かった"):

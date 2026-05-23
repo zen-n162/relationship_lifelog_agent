@@ -72,7 +72,21 @@ def build_conversation_query_plan(
     if llm_plan is not None:
         return llm_plan
     steps = [PlanStep("resolve_profile", "手動profileを確定します。", True, {}, "profile")]
-    if frame.primary_intent in {"conflict_frequency", "conflict_timeline"}:
+    if frame.primary_intent == "conflict_dates_with_surrounding_media":
+        days_before = getattr(settings.relationship, "surrounding_media_days_before", 1) if settings else 1
+        days_after = getattr(settings.relationship, "surrounding_media_days_after", 1) if settings else 1
+        steps.extend(
+            [
+                PlanStep("find_conflict_candidate_dates", "喧嘩・軽いすれ違い候補日をPythonで特定します。", True, {}, "conflict_dates"),
+                PlanStep("get_line_window_around_date", "候補日の小さなLINE windowだけをread-onlyで取得します。", False, {"days_before": 1, "days_after": 1}, "line_windows"),
+                PlanStep("analyze_line_window_with_llm", "小さなLINE windowをlocal LLMで候補性・冗談可能性・severityに整理します。", False, {}, "line_window_analysis"),
+                PlanStep("get_media_by_exact_date_range", "候補日の前後だけに限定してmediaを取得します。", True, {"days_before": days_before, "days_after": days_after}, "media_by_day"),
+                PlanStep("summarize_media_day_with_llm", "日別media metadataをlocal LLMで要約します。", False, {}, "media_day_summaries"),
+                PlanStep("analyze_note_window_with_llm", "日付近傍noteだけを補助根拠として分析します。", False, {}, "note_window_analysis"),
+                PlanStep("summarize_conflict_with_surrounding_media", "喧嘩候補日と前後日の写真summaryを統合します。", True, {}, "analysis_result"),
+            ]
+        )
+    elif frame.primary_intent in {"conflict_frequency", "conflict_timeline", "conflict_date_lookup"}:
         steps.extend(
             [
                 PlanStep("search_relationship_events", "保存済みreview済み候補を読みます。", False, {}, "relationship_events"),
@@ -186,7 +200,7 @@ def _plan_steps_from_llm(data: dict[str, Any], allowed_tools: tuple[str, ...]) -
     for raw in raw_steps:
         if not isinstance(raw, dict):
             raise ValueError("llm returned a malformed plan step")
-        tool_name = str(raw.get("tool_name") or raw.get("tool") or "")
+        tool_name = _normalize_tool_name(str(raw.get("tool_name") or raw.get("tool") or ""))
         if tool_name not in allowed_tools:
             raise ValueError(f"llm returned disallowed tool: {tool_name}")
         params = raw.get("params")
@@ -204,6 +218,21 @@ def _plan_steps_from_llm(data: dict[str, Any], allowed_tools: tuple[str, ...]) -
     if "compose_answer" not in {step.tool_name for step in steps}:
         steps.append(PlanStep("compose_answer", "事実と推定を分けた安全な日本語回答を作ります。", True, {}, "answer"))
     return tuple(steps)
+
+
+def _normalize_tool_name(value: str) -> str:
+    aliases = {
+        "find_conflict_dates": "find_conflict_candidate_dates",
+        "search_conflict_candidate_dates": "find_conflict_candidate_dates",
+        "get_media_window": "get_media_by_exact_date_range",
+        "search_media_by_exact_date_range": "get_media_by_exact_date_range",
+        "summarize_media_by_day": "summarize_media_day_with_llm",
+        "media_day_summary": "summarize_media_day_with_llm",
+        "line_window_analysis": "analyze_line_window_with_llm",
+        "note_window_analysis": "analyze_note_window_with_llm",
+        "compose_compound_answer": "summarize_conflict_with_surrounding_media",
+    }
+    return aliases.get(value.strip(), value.strip())
 
 
 def _record_plan_fallback(

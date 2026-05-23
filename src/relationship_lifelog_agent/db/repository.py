@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import json
 import sqlite3
 from typing import Any
 
@@ -477,6 +478,76 @@ class RelationshipRepository:
 
     def delete_review_action(self, action_id: int) -> int:
         return self._delete("relationship_review_actions", action_id)
+
+    # llm_analysis_cache
+
+    def get_llm_analysis_cache(
+        self,
+        *,
+        analysis_type: str,
+        source_window_hash: str,
+        model_name: str,
+        prompt_version: str,
+    ) -> RowDict | None:
+        rows = self._select_many(
+            "llm_analysis_cache",
+            [
+                "analysis_type = ?",
+                "source_window_hash = ?",
+                "model_name = ?",
+                "prompt_version = ?",
+            ],
+            [analysis_type, source_window_hash, model_name, prompt_version],
+            order_by="id",
+            limit=1,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        try:
+            row["result"] = json.loads(str(row.get("result_json") or "{}"))
+        except json.JSONDecodeError:
+            row["result"] = {}
+        return row
+
+    def upsert_llm_analysis_cache(
+        self,
+        *,
+        analysis_type: str,
+        source_window_hash: str,
+        model_name: str,
+        prompt_version: str,
+        result: Mapping[str, Any],
+        confidence: float = 0.5,
+    ) -> int:
+        values = {
+            "analysis_type": analysis_type,
+            "source_window_hash": source_window_hash,
+            "model_name": model_name,
+            "prompt_version": prompt_version,
+            "result_json": json.dumps(dict(result), ensure_ascii=False, sort_keys=True),
+            "confidence": confidence,
+        }
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM llm_analysis_cache
+                WHERE analysis_type = ?
+                  AND source_window_hash = ?
+                  AND model_name = ?
+                  AND prompt_version = ?
+                """,
+                (analysis_type, source_window_hash, model_name, prompt_version),
+            ).fetchone()
+            if row is None:
+                return self._insert(conn, "llm_analysis_cache", values)
+            cache_id = int(row["id"])
+            assignments = ", ".join(f"{field} = ?" for field in ("result_json", "confidence"))
+            conn.execute(
+                f"UPDATE llm_analysis_cache SET {assignments} WHERE id = ?",
+                (values["result_json"], confidence, cache_id),
+            )
+            return cache_id
 
     # shared helpers
 

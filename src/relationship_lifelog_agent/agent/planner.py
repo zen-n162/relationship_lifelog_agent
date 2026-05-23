@@ -9,6 +9,9 @@ from relationship_lifelog_agent.agent.router import RouteResult
 
 
 SUPPORTED_INTENTS = (
+    "conflict_dates_with_surrounding_media",
+    "conflict_date_lookup",
+    "surrounding_media_summary",
     "conflict_frequency",
     "conflict_timeline",
     "post_conflict_activity",
@@ -69,6 +72,22 @@ def _calls_for_intent(intent: str, month: str | None) -> tuple[AdapterCall, ...]
             AdapterCall("personal", "search_events", kwargs={"event_type": None}),
             AdapterCall("personal", "search_line", query="喧嘩 すれ違い 謝罪"),
             AdapterCall("notes", "search_notes", query="反省 不安"),
+        )
+    if intent == "conflict_dates_with_surrounding_media":
+        return (
+            AdapterCall("personal", "search_events", kwargs={"event_type": None}),
+            AdapterCall("personal", "search_line", query="喧嘩 すれ違い 謝罪"),
+            AdapterCall("notes", "search_notes", query="反省 不安"),
+        )
+    if intent == "conflict_date_lookup":
+        return (
+            AdapterCall("personal", "search_events", kwargs={"event_type": None}),
+            AdapterCall("personal", "search_line", query="喧嘩 すれ違い 謝罪"),
+            AdapterCall("notes", "search_notes", query="反省 不安"),
+        )
+    if intent == "surrounding_media_summary":
+        return (
+            AdapterCall("personal", "search_media", query=""),
         )
     if intent == "conflict_timeline":
         return (

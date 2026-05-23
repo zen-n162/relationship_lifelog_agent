@@ -314,6 +314,15 @@
           </p>
         </article>
         <article class="card">
+          <h3>複合質問を計画</h3>
+          <p>
+            「喧嘩した日はいつ？その日の前後の日は写真から何をしていた？」のような質問は
+            <code>conflict_dates_with_surrounding_media</code>として扱います。
+            まず喧嘩・軽いすれ違い候補日を特定し、その前日・当日・翌日のmediaだけを厳密に確認します。
+            14日のpost-conflict windowはこの質問では主toolとして使いません。
+          </p>
+        </article>
+        <article class="card">
           <h3>回答可能性を判定</h3>
           <p>
             profile、対象speaker、自分側speaker、上流adapter、日付範囲、根拠の有無を
@@ -552,6 +561,11 @@
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
               <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、手動profile保存、最小review actionを含む折りたたみ設定を実装済みです。処理中はsafe progress messageを1つの処理プロセス枠にstream表示し、回答後は完了状態で折りたたみます。</td>
+            </tr>
+            <tr>
+              <td><code>analytics/llm_*_window.py</code></td>
+              <td>小さなwindowだけをlocal LLMで補助分析します。</td>
+              <td>LINE window、date-near note、日別media metadataをJSON構造で分析します。件数・日付・profile確定・ID対応・redactionはPython側で検証し、raw LINE全文、raw note全文、写真パス、正確GPS、顔情報は渡しません。</td>
             </tr>
           </tbody>
         </table>
