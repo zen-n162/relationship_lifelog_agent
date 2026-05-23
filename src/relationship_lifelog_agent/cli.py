@@ -167,6 +167,10 @@ def _profile_main(argv: list[str]) -> None:
                 profile_name=args.profile_name,
                 person_source_id=args.person_source_id,
                 line_speaker_source_id=args.line_speaker_source_id,
+                line_speaker_group_source_id=args.line_speaker_group_source_id,
+                self_person_source_id=args.self_person_source_id,
+                self_line_speaker_source_id=args.self_line_speaker_source_id,
+                self_line_speaker_group_source_id=args.self_line_speaker_group_source_id,
                 relationship_label=args.relationship_label,
                 valid_from=args.valid_from,
                 valid_to=args.valid_to,
@@ -180,14 +184,15 @@ def _profile_main(argv: list[str]) -> None:
                 raise SystemExit(f"profile not found: {args.id}")
             _print_profile(profile)
         elif args.profile_command == "update":
+            profile_id = _resolve_profile_update_id(repo, args)
             fields = _update_fields(args)
             if not fields:
                 print("no profile fields changed")
                 return
-            changed = repo.update_profile(args.id, **fields)
+            changed = repo.update_profile(profile_id, **fields)
             if changed == 0:
-                raise SystemExit(f"profile not found or unchanged: {args.id}")
-            print(f"updated profile id={args.id}")
+                raise SystemExit(f"profile not found or unchanged: {profile_id}")
+            print(f"updated profile id={profile_id}")
         else:
             parser.error("unknown profile command")
     except ValueError as exc:
@@ -386,6 +391,10 @@ def _build_profile_parser() -> argparse.ArgumentParser:
     create.add_argument("--profile-name", required=True)
     create.add_argument("--person-source-id", default=None)
     create.add_argument("--line-speaker-source-id", default=None)
+    create.add_argument("--line-speaker-group-source-id", default=None)
+    create.add_argument("--self-person-source-id", default=None)
+    create.add_argument("--self-line-speaker-source-id", default=None)
+    create.add_argument("--self-line-speaker-group-source-id", default=None)
     create.add_argument("--relationship-label", choices=sorted(ALLOWED_RELATIONSHIP_LABELS), default=None)
     create.add_argument("--valid-from", default=None)
     create.add_argument("--valid-to", default=None)
@@ -396,10 +405,15 @@ def _build_profile_parser() -> argparse.ArgumentParser:
     show.add_argument("--id", required=True, type=int)
 
     update = profile_sub.add_parser("update", help="Update a manually configured profile.")
-    update.add_argument("--id", required=True, type=int)
-    update.add_argument("--profile-name", default=None)
+    update.add_argument("--id", type=int, default=None)
+    update.add_argument("--profile-name", default=None, help="Profile name to update, or new name when --id is used.")
+    update.add_argument("--new-profile-name", default=None, help="Rename the profile while using --profile-name as lookup.")
     update.add_argument("--person-source-id", default=None)
     update.add_argument("--line-speaker-source-id", default=None)
+    update.add_argument("--line-speaker-group-source-id", default=None)
+    update.add_argument("--self-person-source-id", default=None)
+    update.add_argument("--self-line-speaker-source-id", default=None)
+    update.add_argument("--self-line-speaker-group-source-id", default=None)
     update.add_argument("--relationship-label", choices=sorted(ALLOWED_RELATIONSHIP_LABELS), default=None)
     update.add_argument("--valid-from", default=None)
     update.add_argument("--valid-to", default=None)
@@ -408,12 +422,30 @@ def _build_profile_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_profile_update_id(repo: RelationshipRepository, args: argparse.Namespace) -> int:
+    if args.id is not None:
+        return int(args.id)
+    if args.profile_name:
+        profile = repo.get_profile_by_name(args.profile_name)
+        if profile is None:
+            raise SystemExit(f"profile not found: {args.profile_name}")
+        return int(profile["id"])
+    raise SystemExit("profile update requires --id or --profile-name")
+
+
 def _update_fields(args: argparse.Namespace) -> dict[str, Any]:
     fields: dict[str, Any] = {}
+    if getattr(args, "new_profile_name", None):
+        fields["profile_name"] = args.new_profile_name
+    elif getattr(args, "id", None) is not None and getattr(args, "profile_name", None) is not None:
+        fields["profile_name"] = args.profile_name
     for attr, field in (
-        ("profile_name", "profile_name"),
         ("person_source_id", "person_source_id"),
         ("line_speaker_source_id", "line_speaker_source_id"),
+        ("line_speaker_group_source_id", "line_speaker_group_source_id"),
+        ("self_person_source_id", "self_person_source_id"),
+        ("self_line_speaker_source_id", "self_line_speaker_source_id"),
+        ("self_line_speaker_group_source_id", "self_line_speaker_group_source_id"),
         ("relationship_label", "relationship_label"),
         ("valid_from", "valid_from"),
         ("valid_to", "valid_to"),
@@ -430,7 +462,11 @@ def _print_profiles(profiles: list[dict[str, Any]]) -> None:
     if not profiles:
         print("no profiles")
         return
-    print("id\tprofile_name\tperson_source_id\tline_speaker_source_id\trelationship_label\tlabel_source\tvalid_from\tvalid_to\tvisibility")
+    print(
+        "id\tprofile_name\tperson_source_id\tline_speaker_source_id\tline_speaker_group_source_id\t"
+        "self_person_source_id\tself_line_speaker_source_id\tself_line_speaker_group_source_id\t"
+        "relationship_label\tlabel_source\tvalid_from\tvalid_to\tvisibility"
+    )
     for profile in profiles:
         print(
             "\t".join(
@@ -440,6 +476,10 @@ def _print_profiles(profiles: list[dict[str, Any]]) -> None:
                     "profile_name",
                     "person_source_id",
                     "line_speaker_source_id",
+                    "line_speaker_group_source_id",
+                    "self_person_source_id",
+                    "self_line_speaker_source_id",
+                    "self_line_speaker_group_source_id",
                     "relationship_label",
                     "label_source",
                     "valid_from",
@@ -456,6 +496,10 @@ def _print_profile(profile: dict[str, Any]) -> None:
         "profile_name",
         "person_source_id",
         "line_speaker_source_id",
+        "line_speaker_group_source_id",
+        "self_person_source_id",
+        "self_line_speaker_source_id",
+        "self_line_speaker_group_source_id",
         "relationship_label",
         "label_source",
         "valid_from",

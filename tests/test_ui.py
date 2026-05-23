@@ -10,6 +10,7 @@ from relationship_lifelog_agent.ui.chat_ui import (
     build_ui_answer,
     build_ui_chat_response,
     build_ui_chat_answer,
+    save_profile_from_ui,
     save_review_action_from_ui,
 )
 
@@ -297,6 +298,32 @@ def test_chat_ui_profile_missing_returns_safe_guidance(tmp_path) -> None:
 
     assert "relationship profile が手動設定されていない" in answer
     assert "AIは恋人ラベルを推定しません" in answer
+
+
+def test_chat_ui_can_save_manual_profile_with_self_ids(tmp_path) -> None:
+    db_path = tmp_path / "relationship.sqlite"
+
+    status, _dropdown_update = save_profile_from_ui(
+        PROFILE_NONE_VALUE,
+        "手動profile",
+        "partner",
+        "plr:person:target",
+        "plr:line_speaker:target",
+        "plr:line_speaker_group:target",
+        "plr:person:self",
+        "plr:line_speaker:self",
+        "plr:line_speaker_group:self",
+        str(db_path),
+    )
+
+    repo = RelationshipRepository(db_path)
+    profile = repo.get_profile(1)
+    assert "manual profile を保存しました" in status
+    assert profile["label_source"] == "user_manual"
+    assert profile["line_speaker_group_source_id"] == "plr:line_speaker_group:target"
+    assert profile["self_person_source_id"] == "plr:person:self"
+    assert profile["self_line_speaker_source_id"] == "plr:line_speaker:self"
+    assert profile["self_line_speaker_group_source_id"] == "plr:line_speaker_group:self"
 
 
 def _settings_with_profile(

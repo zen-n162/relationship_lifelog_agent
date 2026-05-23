@@ -5,6 +5,14 @@ from pathlib import Path
 import sqlite3
 
 
+RELATIONSHIP_PROFILE_EXTRA_COLUMNS = {
+    "line_speaker_group_source_id": "TEXT",
+    "self_person_source_id": "TEXT",
+    "self_line_speaker_source_id": "TEXT",
+    "self_line_speaker_group_source_id": "TEXT",
+}
+
+
 def initialize_database(db_path: str | Path) -> Path:
     path = Path(db_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +196,7 @@ def _ensure_relationship_profiles_contract(conn: sqlite3.Connection) -> None:
         return
     sql = row[0] or ""
     if "label_source = 'user_manual'" in sql and "relationship_label IN" in sql:
+        _ensure_relationship_profile_extra_columns(conn)
         return
 
     columns = {item[1] for item in conn.execute("PRAGMA table_info(relationship_profiles)")}
@@ -199,6 +208,16 @@ def _ensure_relationship_profiles_contract(conn: sqlite3.Connection) -> None:
         "profile_name": "profile_name" if "profile_name" in columns else "'Manual Profile'",
         "person_source_id": "person_source_id" if "person_source_id" in columns else "NULL",
         "line_speaker_source_id": "line_speaker_source_id" if "line_speaker_source_id" in columns else "NULL",
+        "line_speaker_group_source_id": (
+            "line_speaker_group_source_id" if "line_speaker_group_source_id" in columns else "NULL"
+        ),
+        "self_person_source_id": "self_person_source_id" if "self_person_source_id" in columns else "NULL",
+        "self_line_speaker_source_id": (
+            "self_line_speaker_source_id" if "self_line_speaker_source_id" in columns else "NULL"
+        ),
+        "self_line_speaker_group_source_id": (
+            "self_line_speaker_group_source_id" if "self_line_speaker_group_source_id" in columns else "NULL"
+        ),
         "relationship_label": (
             "CASE WHEN relationship_label IN ('partner', 'ex_partner', 'close_person', 'other_private') "
             "THEN relationship_label ELSE NULL END"
@@ -223,6 +242,10 @@ def _ensure_relationship_profiles_contract(conn: sqlite3.Connection) -> None:
           profile_name,
           person_source_id,
           line_speaker_source_id,
+          line_speaker_group_source_id,
+          self_person_source_id,
+          self_line_speaker_source_id,
+          self_line_speaker_group_source_id,
           relationship_label,
           label_source,
           valid_from,
@@ -237,6 +260,10 @@ def _ensure_relationship_profiles_contract(conn: sqlite3.Connection) -> None:
           {profile_name},
           {person_source_id},
           {line_speaker_source_id},
+          {line_speaker_group_source_id},
+          {self_person_source_id},
+          {self_line_speaker_source_id},
+          {self_line_speaker_group_source_id},
           {relationship_label},
           'user_manual',
           {valid_from},
@@ -252,6 +279,13 @@ def _ensure_relationship_profiles_contract(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _ensure_relationship_profile_extra_columns(conn: sqlite3.Connection) -> None:
+    columns = {item[1] for item in conn.execute("PRAGMA table_info(relationship_profiles)")}
+    for column, column_type in RELATIONSHIP_PROFILE_EXTRA_COLUMNS.items():
+        if column not in columns:
+            conn.execute(f"ALTER TABLE relationship_profiles ADD COLUMN {column} {column_type}")
+
+
 def _relationship_profiles_schema() -> str:
     return """
     CREATE TABLE relationship_profiles (
@@ -259,6 +293,10 @@ def _relationship_profiles_schema() -> str:
       profile_name TEXT NOT NULL,
       person_source_id TEXT,
       line_speaker_source_id TEXT,
+      line_speaker_group_source_id TEXT,
+      self_person_source_id TEXT,
+      self_line_speaker_source_id TEXT,
+      self_line_speaker_group_source_id TEXT,
       relationship_label TEXT,
       label_source TEXT NOT NULL DEFAULT 'user_manual',
       valid_from TEXT,

@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import sqlite3
 
 from relationship_lifelog_agent.adapters.notes_lifelog import NotesSqliteReadOnlyAdapter
@@ -162,6 +163,48 @@ def test_upstream_readonly_backend_without_paths_fails_safely(tmp_path) -> None:
     assert "上流adapter未設定" in answer
     assert "personal_lifelog_db" in answer
     assert "notes_lifelog_db" in answer
+
+
+def test_personal_upstream_adapter_resolves_manual_and_group_speaker_sources(tmp_path) -> None:
+    db_path = tmp_path / "personal.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE line_messages (id TEXT PRIMARY KEY, sent_at TEXT, text TEXT, sender TEXT, chat_id TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE line_speaker_links (id TEXT PRIMARY KEY, chat_id TEXT, speaker_name TEXT, verified_by_user INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO line_messages VALUES (?, ?, ?, ?, ?)",
+        ("line-1", "2025-01-05", "private LINE body with 喧嘩", "Target Speaker", "chat-1"),
+    )
+    conn.execute(
+        "INSERT INTO line_messages VALUES (?, ?, ?, ?, ?)",
+        ("line-2", "2025-01-05", "private LINE body with 喧嘩", "Other Speaker", "chat-1"),
+    )
+    conn.execute(
+        "INSERT INTO line_speaker_links VALUES (?, ?, ?, ?)",
+        ("speaker-link-1", "chat-1", "Target Speaker", 1),
+    )
+    conn.commit()
+    conn.close()
+    adapter = PersonalSqliteReadOnlyAdapter(db_path)
+
+    linked = adapter.search_line(
+        "喧嘩",
+        speaker_id="plr:line_speaker:speaker-link-1",
+        mode="public",
+    )
+    group_hash = hashlib.sha256("chat-1|Target Speaker".encode("utf-8")).hexdigest()[:12]
+    grouped = adapter.search_line(
+        "喧嘩",
+        speaker_id=f"plr:line_speaker_group:{group_hash}",
+        mode="public",
+    )
+
+    assert [item.source_id for item in linked] == ["line-1"]
+    assert [item.source_id for item in grouped] == ["line-1"]
+    assert linked[0].excerpt is None
 
 
 def test_open_readonly_sqlite_uses_mode_ro(tmp_path, monkeypatch) -> None:

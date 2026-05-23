@@ -417,7 +417,7 @@ def _fetch_sources(
     backend: str,
     mode: str,
 ) -> dict[str, Any]:
-    speaker_id = profile.line_speaker_source_id if profile and backend != "mock" else None
+    speaker_id = profile.target_line_speaker_source_id if profile and backend != "mock" else None
     person_id = profile.person_source_id if profile and backend != "mock" else None
     personal = getattr(memory, "personal")
     notes = getattr(memory, "notes")
@@ -509,6 +509,10 @@ def _format_profile(profile: ProfileContext | None, mode: str, privacy_level: st
         f"- profile_name: {profile.profile_name}",
         f"- person_source_id: {profile.person_source_id or 'unset'}",
         f"- line_speaker_source_id: {profile.line_speaker_source_id or 'unset'}",
+        f"- line_speaker_group_source_id: {profile.line_speaker_group_source_id or 'unset'}",
+        f"- self_person_source_id: {profile.self_person_source_id or 'unset'}",
+        f"- self_line_speaker_source_id: {profile.self_line_speaker_source_id or 'unset'}",
+        f"- self_line_speaker_group_source_id: {profile.self_line_speaker_group_source_id or 'unset'}",
         "- label_source: user_manual",
     ]
     if mode == "private" and profile.relationship_label:

@@ -6,9 +6,9 @@ from typing import Any
 from relationship_lifelog_agent.agent.executor import ChatAnswer, ReviewTarget, answer_chat
 from relationship_lifelog_agent.agent.router import route_question
 from relationship_lifelog_agent.config import Settings
-from relationship_lifelog_agent.db.repository import RelationshipRepository
+from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
-from relationship_lifelog_agent.profiles import default_profile_choice, parse_profile_choice, profile_choices
+from relationship_lifelog_agent.profiles import PROFILE_NONE_VALUE, default_profile_choice, parse_profile_choice, profile_choices
 from relationship_lifelog_agent.review.actions import apply_review_action
 from relationship_lifelog_agent.ui.components import SUGGESTED_QUESTIONS
 
@@ -47,6 +47,7 @@ def build_chat_ui(settings: Settings) -> Any:
             )
             send = gr.Button("Send", variant="primary", scale=1)
             clear = gr.Button("Clear", scale=1)
+        db_path_state = gr.State(settings.paths.relationship_db)
         with gr.Accordion("Settings", open=False):
             backend = gr.Dropdown(
                 choices=["mock", "upstream_readonly"],
@@ -60,6 +61,37 @@ def build_chat_ui(settings: Settings) -> Any:
                 label="Target profile",
                 interactive=True,
             )
+            manual_profile_name = gr.Textbox(label="profile_name", value="", placeholder="手動表示名")
+            manual_relationship_label = gr.Dropdown(
+                choices=[("未設定", ""), *[(label, label) for label in sorted(ALLOWED_RELATIONSHIP_LABELS)]],
+                value="",
+                label="relationship_label",
+                interactive=True,
+            )
+            manual_person_source_id = gr.Textbox(label="person_source_id", value="", placeholder="plr:person:...")
+            manual_line_speaker_source_id = gr.Textbox(
+                label="line_speaker_source_id",
+                value="",
+                placeholder="plr:line_speaker:...",
+            )
+            manual_line_speaker_group_source_id = gr.Textbox(
+                label="line_speaker_group_source_id",
+                value="",
+                placeholder="plr:line_speaker_group:...",
+            )
+            manual_self_person_source_id = gr.Textbox(label="self_person_source_id", value="", placeholder="plr:person:...")
+            manual_self_line_speaker_source_id = gr.Textbox(
+                label="self_line_speaker_source_id",
+                value="",
+                placeholder="plr:line_speaker:...",
+            )
+            manual_self_line_speaker_group_source_id = gr.Textbox(
+                label="self_line_speaker_group_source_id",
+                value="",
+                placeholder="plr:line_speaker_group:...",
+            )
+            save_profile = gr.Button("Save manual profile", variant="secondary")
+            profile_save_status = gr.Markdown("")
             with gr.Row():
                 date_from = gr.Textbox(label="date_from", placeholder="2025-01-01", value="")
                 date_to = gr.Textbox(label="date_to", placeholder="2025-03-31", value="")
@@ -89,7 +121,6 @@ def build_chat_ui(settings: Settings) -> Any:
             save_review = gr.Button("Save review action", variant="secondary")
             review_status = gr.Markdown("")
             review_targets_state = gr.State([])
-            db_path_state = gr.State(settings.paths.relationship_db)
 
         def respond(
             user_message: Any,
@@ -139,6 +170,22 @@ def build_chat_ui(settings: Settings) -> Any:
             save_review_action_from_ui,
             [review_target, review_action, review_note, review_targets_state, db_path_state],
             review_status,
+        )
+        save_profile.click(
+            save_profile_from_ui,
+            [
+                profile,
+                manual_profile_name,
+                manual_relationship_label,
+                manual_person_source_id,
+                manual_line_speaker_source_id,
+                manual_line_speaker_group_source_id,
+                manual_self_person_source_id,
+                manual_self_line_speaker_source_id,
+                manual_self_line_speaker_group_source_id,
+                db_path_state,
+            ],
+            [profile_save_status, profile],
         )
         clear.click(
             lambda: ([], gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], ""),
@@ -228,6 +275,62 @@ def build_ui_chat_answer(
         text=sanitize_answer(answer, mode=mode),
         review_targets=chat_answer.review_targets,
     )
+
+
+def save_profile_from_ui(
+    selected_profile: str | int | None,
+    profile_name: str | None,
+    relationship_label: str | None,
+    person_source_id: str | None,
+    line_speaker_source_id: str | None,
+    line_speaker_group_source_id: str | None,
+    self_person_source_id: str | None,
+    self_line_speaker_source_id: str | None,
+    self_line_speaker_group_source_id: str | None,
+    relationship_db_path: str,
+) -> tuple[str, Any]:
+    import gradio as gr
+
+    repo = RelationshipRepository(relationship_db_path)
+    selected_id = parse_profile_choice(selected_profile)
+    label = _clean_text(relationship_label)
+    values = {
+        "person_source_id": _clean_text(person_source_id),
+        "line_speaker_source_id": _clean_text(line_speaker_source_id),
+        "line_speaker_group_source_id": _clean_text(line_speaker_group_source_id),
+        "self_person_source_id": _clean_text(self_person_source_id),
+        "self_line_speaker_source_id": _clean_text(self_line_speaker_source_id),
+        "self_line_speaker_group_source_id": _clean_text(self_line_speaker_group_source_id),
+    }
+    try:
+        if selected_id is None:
+            clean_name = _clean_text(profile_name)
+            if not clean_name:
+                return "profile_name を入力してください。", gr.update()
+            profile_id = repo.create_profile(
+                profile_name=clean_name,
+                relationship_label=label,
+                **values,
+            )
+            status = f"manual profile を保存しました: id={profile_id}"
+        else:
+            fields = {key: value for key, value in values.items() if value is not None}
+            clean_name = _clean_text(profile_name)
+            if clean_name:
+                fields["profile_name"] = clean_name
+            if label:
+                fields["relationship_label"] = label
+            if not fields:
+                return "更新するprofile項目を入力してください。", gr.update()
+            changed = repo.update_profile(selected_id, **fields)
+            if changed == 0:
+                return "profile が見つからないか、変更がありません。", gr.update()
+            profile_id = selected_id
+            status = f"manual profile を更新しました: id={profile_id}"
+    except ValueError as exc:
+        return sanitize_answer(f"profile保存に失敗しました: {exc}"), gr.update()
+    choices = _profile_choices_from_repo(repo)
+    return sanitize_answer(status), gr.update(choices=choices, value=str(profile_id))
 
 
 def build_ui_answer(
@@ -337,6 +440,12 @@ def save_review_action_from_ui(
 
 def _target_choices(targets: tuple[ReviewTarget, ...]) -> list[tuple[str, str]]:
     return [(target.label, str(target.event_id)) for target in targets]
+
+
+def _profile_choices_from_repo(repo: RelationshipRepository) -> list[tuple[str, str]]:
+    rows = repo.list_profiles()
+    choices = [(f"{row['id']}: {row['profile_name']}", str(row["id"])) for row in rows]
+    return choices or [("未設定", PROFILE_NONE_VALUE)]
 
 
 def _first_target_value(targets: tuple[ReviewTarget, ...]) -> str | None:

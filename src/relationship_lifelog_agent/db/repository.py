@@ -41,6 +41,10 @@ class RelationshipRepository:
         *,
         person_source_id: str | None = None,
         line_speaker_source_id: str | None = None,
+        line_speaker_group_source_id: str | None = None,
+        self_person_source_id: str | None = None,
+        self_line_speaker_source_id: str | None = None,
+        self_line_speaker_group_source_id: str | None = None,
         label_source: str = MANUAL_LABEL_SOURCE,
         valid_from: str | None = None,
         valid_to: str | None = None,
@@ -54,6 +58,10 @@ class RelationshipRepository:
             "profile_name": profile_name,
             "person_source_id": person_source_id,
             "line_speaker_source_id": line_speaker_source_id,
+            "line_speaker_group_source_id": line_speaker_group_source_id,
+            "self_person_source_id": self_person_source_id,
+            "self_line_speaker_source_id": self_line_speaker_source_id,
+            "self_line_speaker_group_source_id": self_line_speaker_group_source_id,
             "relationship_label": relationship_label,
             "label_source": label_source,
             "valid_from": valid_from,
@@ -66,6 +74,16 @@ class RelationshipRepository:
 
     def get_profile(self, profile_id: int) -> RowDict | None:
         return self._get_by_id("relationship_profiles", profile_id)
+
+    def get_profile_by_name(self, profile_name: str) -> RowDict | None:
+        rows = self._select_many(
+            "relationship_profiles",
+            ["profile_name = ?"],
+            [profile_name],
+            order_by="id",
+            limit=1,
+        )
+        return rows[0] if rows else None
 
     def list_profiles(self, *, visibility: str | None = None, limit: int = 100) -> list[RowDict]:
         clauses: list[str] = []
@@ -80,6 +98,10 @@ class RelationshipRepository:
             "profile_name",
             "person_source_id",
             "line_speaker_source_id",
+            "line_speaker_group_source_id",
+            "self_person_source_id",
+            "self_line_speaker_source_id",
+            "self_line_speaker_group_source_id",
             "relationship_label",
             "label_source",
             "valid_from",

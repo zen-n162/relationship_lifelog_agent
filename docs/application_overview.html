@@ -315,8 +315,9 @@
         <article class="card">
           <h3>対象profileを手動設定</h3>
           <p>
-            relationship label、person source ID、LINE speaker source IDはユーザーが
-            CLIまたはUI設定で手動選択します。AIは恋人ラベルやID対応を推定しません。
+            relationship label、対象側person / LINE speaker / speaker group source ID、
+            自分側person / LINE speaker / speaker group source IDはユーザーがCLIまたはUI設定で手動入力します。
+            AIは恋人ラベルやpersonとLINE speakerの対応を推定しません。
           </p>
         </article>
         <article class="card">
@@ -388,6 +389,7 @@
         <li>喧嘩はどのくらいしている？</li>
         <li>喧嘩はいつ多かった？</li>
         <li>喧嘩の後どこへ行っている？</li>
+        <li>LINEを返せていなかった時期は？</li>
         <li>その時、自分は何を考えていた？</li>
         <li>2025年1月の関係を振り返って</li>
       </ul>
@@ -405,7 +407,7 @@
           <span class="num">1</span>
           <div>
             <strong>Chat UI</strong>
-            <p>ユーザーがGradioのシンプルなチャット画面で質問します。設定Accordionでbackend、profile、date range、post-conflict window、private/public modeを選べます。</p>
+            <p>ユーザーがGradioのシンプルなチャット画面で質問します。設定Accordionでbackend、profile、date range、post-conflict window、private/public modeを選べます。profile未設定時やself側ID追記時は、手動入力欄からprofileを保存できます。</p>
           </div>
         </div>
         <div class="flow-step">
@@ -516,7 +518,7 @@
             <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
-              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、最小review actionを含む折りたたみ設定を実装済みです。</td>
+              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、手動profile保存、最小review actionを含む折りたたみ設定を実装済みです。</td>
             </tr>
           </tbody>
         </table>
@@ -528,7 +530,7 @@
       <ul>
         <li>既存の<code>personal_lifelog_rag</code>と<code>notes_lifelog_rag</code>は上流ツールとして扱い、破壊的に編集しません。</li>
         <li>relationship DBには、関係固有の派生情報とsource pointerを保存し、上流のraw private dataを丸ごとコピーしません。</li>
-        <li><code>relationship_profiles</code>は手動設定のみを保存し、<code>label_source</code>は<code>user_manual</code>固定です。</li>
+        <li><code>relationship_profiles</code>は手動設定のみを保存し、<code>label_source</code>は<code>user_manual</code>固定です。対象側と自分側のperson / LINE speaker / speaker group source IDを保存できます。</li>
         <li>外部API、cloud upload、モデル自動ダウンロードは使いません。</li>
         <li>Gradioは<code>127.0.0.1</code>で起動し、<code>share=True</code>は禁止です。</li>
         <li>public modeでは実人物名、恋人ラベル、LINE全文、メモ全文、正確GPS、顔crop、実写真、private pathを出しません。</li>
@@ -542,7 +544,7 @@
       <h2>SQLite schema</h2>
       <p>relationship DBは次のテーブルを持ちます。</p>
       <ul>
-        <li><code>relationship_profiles</code>: 手動設定された対象profile</li>
+        <li><code>relationship_profiles</code>: 手動設定された対象profile。対象側と自分側のperson source ID、LINE speaker source ID、LINE speaker group source IDを保持します。</li>
         <li><code>relationship_events</code>: 喧嘩候補、仲直り候補、外出候補、感情メモ候補など</li>
         <li><code>relationship_event_evidence</code>: source pointerと短い根拠情報</li>
         <li><code>interaction_metrics</code>: メッセージ数、返信遅延、沈黙期間などの観測指標</li>
@@ -586,7 +588,11 @@ python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
       <pre><code>python -m relationship_lifelog_agent.cli profile create \
   --profile-name "Aさん" \
   --person-source-id "plr:person:4" \
+  --line-speaker-group-source-id "plr:line_speaker_group:target" \
   --line-speaker-source-id "plr:line_speaker:2" \
+  --self-person-source-id "plr:person:self" \
+  --self-line-speaker-source-id "plr:line_speaker:self" \
+  --self-line-speaker-group-source-id "plr:line_speaker_group:self" \
   --relationship-label "partner"</code></pre>
       <p>relationship event candidatesはdry-runでMarkdown reportとして生成できます。標準ではDBに候補を書き込みません。</p>
       <p>

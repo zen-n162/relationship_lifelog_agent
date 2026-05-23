@@ -9,6 +9,7 @@ from relationship_lifelog_agent.adapters.types import (
     AdapterEvidence,
     EventEvidence,
     EvidenceItem,
+    LineEvidence,
     MediaEvidence,
     MonthlyReflection,
     NoteEvidence,
@@ -151,12 +152,15 @@ def execute_plan(
         result = _post_conflict_activity(results)
     elif intent == "emotional_note_lookup":
         result = _emotional_note_lookup(results)
+    elif intent == "reply_delay_analysis":
+        result = _reply_delay_analysis(results, profile)
     elif intent == "monthly_relationship_review":
         result = _monthly_relationship_review(results, month=plan.month or "2025-01")
     else:
         result = _general_relationship_qa(results)
     result = _with_profile_context(result, profile)
-    return _with_adapter_warnings(result, _memory_warnings(memory), _backend(memory))
+    warnings = [*_profile_warnings_for_plan(plan, profile), *_memory_warnings(memory)]
+    return _with_adapter_warnings(result, warnings, _backend(memory))
 
 
 def _run_adapter_calls(
@@ -185,8 +189,9 @@ def _execute_adapter_call(
     adapter = getattr(memory, call.adapter)
     method = getattr(adapter, call.method)
     kwargs = dict(call.kwargs)
+    speaker_role = str(kwargs.pop("profile_speaker_role", "target"))
     kwargs["mode"] = mode
-    _apply_profile_filters(call, kwargs, profile)
+    _apply_profile_filters(call, kwargs, profile, speaker_role=speaker_role)
     if call.query is None:
         return method(**kwargs)
     return method(call.query, **kwargs)
@@ -346,6 +351,37 @@ def _emotional_note_lookup(results: dict[str, list[Any]]) -> AnalysisResult:
     )
 
 
+def _reply_delay_analysis(results: dict[str, list[Any]], profile: ProfileContext | None) -> AnalysisResult:
+    line_items = [item for item in _adapter_items(results, "personal.search_line") if isinstance(item, LineEvidence)]
+    self_configured = bool(profile and profile.self_line_speaker_filter_source_id)
+    target_configured = bool(profile and profile.target_line_speaker_source_id)
+    cautions = [
+        "返信間隔は観測可能なLINE記録の候補として扱い、相手の内面や関係状態は断定しません。",
+        "本文内容ではなく件数・期間・source pointer を中心に確認します。",
+    ]
+    if not self_configured:
+        cautions.append(
+            "返信間隔系の分析には self_line_speaker_source_id または self_line_speaker_group_source_id の手動設定が必要です。"
+        )
+    summary = "返信間隔系の分析は、手動profileの自分側LINE speaker設定を使って確認します。"
+    if line_items and self_configured:
+        summary = "手動profileの自分側LINE speaker設定に基づき、返信・沈黙に関するLINE候補を確認しました。"
+    return AnalysisResult(
+        intent="reply_delay_analysis",
+        summary=summary,
+        aggregate={
+            "line_evidence_candidates": len(line_items),
+            "self_speaker_configured": self_configured,
+            "target_speaker_configured": target_configured,
+        },
+        examples=[f"{item.date}: {item.summary}" for item in line_items[:4]],
+        evidence=_evidence_items(line_items),
+        confidence=mean([item.confidence for item in line_items]) if line_items else 0.35,
+        evidence_strength=mean([item.evidence_strength for item in line_items]) if line_items else 0.0,
+        cautions=cautions,
+    )
+
+
 def _monthly_relationship_review(results: dict[str, list[Any]], month: str) -> AnalysisResult:
     events = [*_adapter_items(results, "personal.search_events"), *_adapter_items(results, "relationship_db.events")]
     conflicts = _rank_events([event for event in events if isinstance(event, EventEvidence) and event.event_type in CONFLICT_TYPES])
@@ -408,7 +444,7 @@ def _profile_missing_result(intent: str) -> AnalysisResult:
             "label_source": "user_manual only",
         },
         examples=[
-            "CLIで profile create を使い、person_source_id と line_speaker_source_id を手動で設定してください。",
+            "CLIで profile create を使い、person_source_id と LINE speaker source ID を手動で設定してください。",
             "relationship_label はCLIで許可されたprivate labelから手動で選びます。",
         ],
         confidence=1.0,
@@ -532,11 +568,23 @@ def _load_saved_relationship_review_counts(
     return counts
 
 
-def _apply_profile_filters(call: AdapterCall, kwargs: dict[str, Any], profile: ProfileContext | None) -> None:
+def _apply_profile_filters(
+    call: AdapterCall,
+    kwargs: dict[str, Any],
+    profile: ProfileContext | None,
+    *,
+    speaker_role: str = "target",
+) -> None:
     if profile is None:
         return
-    if call.method == "search_line" and profile.line_speaker_source_id:
-        kwargs.setdefault("speaker_id", profile.line_speaker_source_id)
+    if call.method == "search_line":
+        speaker_id = (
+            profile.self_line_speaker_filter_source_id
+            if speaker_role == "self"
+            else profile.target_line_speaker_source_id
+        )
+        if speaker_id:
+            kwargs.setdefault("speaker_id", speaker_id)
     if call.method in {"search_media", "search_events"} and profile.person_source_id:
         kwargs.setdefault("person_id", profile.person_source_id)
 
@@ -554,6 +602,21 @@ def _with_profile_context(result: AnalysisResult, profile: ProfileContext | None
         "選択profileはユーザー手動設定のみを使います。関係ラベルやID対応はAIで推定しません。",
     ]
     return replace(result, aggregate=aggregate, cautions=cautions)
+
+
+def _profile_warnings_for_plan(plan: QueryPlan, profile: ProfileContext | None) -> list[str]:
+    warnings: list[str] = []
+    if profile is None:
+        return warnings
+    uses_self_speaker = any(
+        call.method == "search_line" and call.kwargs.get("profile_speaker_role") == "self"
+        for call in plan.calls
+    )
+    if uses_self_speaker and not profile.self_line_speaker_filter_source_id:
+        warnings.append(
+            "返信間隔系の分析には self_line_speaker_source_id または self_line_speaker_group_source_id の手動設定が必要です。"
+        )
+    return warnings
 
 
 def _review_targets_from_result(

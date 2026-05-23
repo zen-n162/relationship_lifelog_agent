@@ -25,6 +25,63 @@ def test_schema_can_be_initialized(tmp_path) -> None:
             columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             assert "created_at" in columns
             assert "updated_at" in columns
+        profile_columns = {row[1] for row in conn.execute("PRAGMA table_info(relationship_profiles)")}
+        assert {
+            "line_speaker_group_source_id",
+            "self_person_source_id",
+            "self_line_speaker_source_id",
+            "self_line_speaker_group_source_id",
+        } <= profile_columns
+
+
+def test_profile_migration_adds_self_and_group_columns_without_deleting_rows(tmp_path) -> None:
+    db_path = tmp_path / "relationship.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE relationship_profiles (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              profile_name TEXT NOT NULL,
+              person_source_id TEXT,
+              line_speaker_source_id TEXT,
+              relationship_label TEXT,
+              label_source TEXT NOT NULL DEFAULT 'user_manual',
+              valid_from TEXT,
+              valid_to TEXT,
+              visibility TEXT NOT NULL DEFAULT 'private',
+              notes TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              CHECK (relationship_label IS NULL OR relationship_label IN ('partner', 'ex_partner', 'close_person', 'other_private')),
+              CHECK (label_source = 'user_manual'),
+              CHECK (visibility IN ('private', 'hidden'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO relationship_profiles (
+              profile_name,
+              person_source_id,
+              line_speaker_source_id,
+              relationship_label
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ("manual", "plr:person:target", "plr:line_speaker:target", "partner"),
+        )
+
+    initialize_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(relationship_profiles)")}
+        assert {
+            "line_speaker_group_source_id",
+            "self_person_source_id",
+            "self_line_speaker_source_id",
+            "self_line_speaker_group_source_id",
+        } <= columns
+        rows = conn.execute("SELECT profile_name, person_source_id FROM relationship_profiles").fetchall()
+        assert rows == [("manual", "plr:person:target")]
 
 
 def test_repository_can_save_relationship_event(tmp_path) -> None:

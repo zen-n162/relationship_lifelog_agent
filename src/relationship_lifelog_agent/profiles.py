@@ -16,8 +16,20 @@ class ProfileContext:
     profile_name: str
     person_source_id: str | None
     line_speaker_source_id: str | None
+    line_speaker_group_source_id: str | None
+    self_person_source_id: str | None
+    self_line_speaker_source_id: str | None
+    self_line_speaker_group_source_id: str | None
     relationship_label: str | None
     label_source: str
+
+    @property
+    def target_line_speaker_source_id(self) -> str | None:
+        return self.line_speaker_group_source_id or self.line_speaker_source_id
+
+    @property
+    def self_line_speaker_filter_source_id(self) -> str | None:
+        return self.self_line_speaker_group_source_id or self.self_line_speaker_source_id
 
 
 def get_repository(settings: Settings) -> RelationshipRepository:
@@ -38,6 +50,10 @@ def load_profile_context(settings: Settings, profile_id: int | None) -> ProfileC
         profile_name=str(row["profile_name"]),
         person_source_id=row.get("person_source_id"),
         line_speaker_source_id=row.get("line_speaker_source_id"),
+        line_speaker_group_source_id=row.get("line_speaker_group_source_id"),
+        self_person_source_id=row.get("self_person_source_id"),
+        self_line_speaker_source_id=row.get("self_line_speaker_source_id"),
+        self_line_speaker_group_source_id=row.get("self_line_speaker_group_source_id"),
         relationship_label=row.get("relationship_label"),
         label_source=str(row["label_source"]),
     )

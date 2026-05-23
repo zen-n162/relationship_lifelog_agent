@@ -12,6 +12,7 @@ SUPPORTED_INTENTS = (
     "conflict_frequency",
     "conflict_timeline",
     "post_conflict_activity",
+    "reply_delay_analysis",
     "emotional_note_lookup",
     "monthly_relationship_review",
     "general_relationship_qa",
@@ -86,6 +87,11 @@ def _calls_for_intent(intent: str, month: str | None) -> tuple[AdapterCall, ...]
         return (
             AdapterCall("notes", "search_notes", query="反省 不安 メモ"),
             AdapterCall("notes", "search_thoughts", query="反省 不安 自分側"),
+        )
+    if intent == "reply_delay_analysis":
+        return (
+            AdapterCall("personal", "search_line", query="返信 返事 沈黙", kwargs={"profile_speaker_role": "self"}),
+            AdapterCall("personal", "search_line", query="返信 返事 沈黙", kwargs={"profile_speaker_role": "target"}),
         )
     if intent == "monthly_relationship_review":
         target_month = month or "2025-01"

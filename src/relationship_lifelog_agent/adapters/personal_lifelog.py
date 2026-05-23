@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -178,8 +179,7 @@ class PersonalSqliteReadOnlyAdapter:
             where_date_range(where, params, date_col, date_from, date_to)
             where_text_search(where, params, [col for col in (text_col,) if col], query)
             if speaker_id and sender_col:
-                where.append(f'"{sender_col}" = ?')
-                params.append(speaker_id)
+                _where_speaker_filter(conn, where, params, speaker_id, sender_col=sender_col, chat_col=chat_col)
             selected = _selected_columns(id_col, date_col, text_col, sender_col, chat_col, type_col)
             rows = select_rows(conn, "line_messages", selected, where, params, order_by=date_col, limit=limit)
             return [
@@ -406,6 +406,91 @@ class PersonalSqliteReadOnlyAdapter:
 
 def _selected_columns(*columns: str | None) -> list[str]:
     return list(dict.fromkeys(column for column in columns if column))
+
+
+def _where_speaker_filter(
+    conn: sqlite3.Connection,
+    where: list[str],
+    params: list[object],
+    speaker_id: str,
+    *,
+    sender_col: str,
+    chat_col: str | None,
+) -> None:
+    resolved = _resolve_speaker_source(conn, speaker_id, sender_col=sender_col, chat_col=chat_col)
+    if resolved is None:
+        where.append(f'"{sender_col}" = ?')
+        params.append(speaker_id)
+        return
+    speaker_name, chat_id = resolved
+    where.append(f'"{sender_col}" = ?')
+    params.append(speaker_name)
+    if chat_id and chat_col:
+        where.append(f'"{chat_col}" = ?')
+        params.append(chat_id)
+
+
+def _resolve_speaker_source(
+    conn: sqlite3.Connection,
+    speaker_source_id: str,
+    *,
+    sender_col: str,
+    chat_col: str | None,
+) -> tuple[str, str | None] | None:
+    if speaker_source_id.startswith("plr:line_speaker:"):
+        link_id = speaker_source_id.removeprefix("plr:line_speaker:")
+        return _resolve_line_speaker_link(conn, link_id)
+    if speaker_source_id.startswith("plr:line_speaker_group:"):
+        source_hash = speaker_source_id.removeprefix("plr:line_speaker_group:")
+        return _resolve_line_speaker_group(conn, source_hash, sender_col=sender_col, chat_col=chat_col)
+    return None
+
+
+def _resolve_line_speaker_link(conn: sqlite3.Connection, link_id: str) -> tuple[str, str | None] | None:
+    if not table_exists(conn, "line_speaker_links"):
+        return None
+    columns = table_columns(conn, "line_speaker_links")
+    id_col = first_existing_column(columns, ("id",))
+    speaker_col = first_existing_column(columns, ("speaker_name", "display_name", "sender", "name"))
+    chat_col = first_existing_column(columns, ("chat_id", "conversation_id", "room_id"))
+    if not id_col or not speaker_col:
+        return None
+    selected = _selected_columns(speaker_col, chat_col)
+    select_sql = ", ".join(_quote_identifier(column) for column in selected)
+    row = conn.execute(
+        f"SELECT {select_sql} FROM line_speaker_links WHERE {_quote_identifier(id_col)} = ? LIMIT 1",
+        (link_id,),
+    ).fetchone()
+    if row is None or row[speaker_col] is None:
+        return None
+    chat_id = str(row[chat_col]) if chat_col and row[chat_col] is not None else None
+    return str(row[speaker_col]), chat_id
+
+
+def _resolve_line_speaker_group(
+    conn: sqlite3.Connection,
+    source_hash: str,
+    *,
+    sender_col: str,
+    chat_col: str | None,
+) -> tuple[str, str | None] | None:
+    selected = _selected_columns(sender_col, chat_col)
+    select_sql = ", ".join(_quote_identifier(column) for column in selected)
+    group_by = ", ".join(_quote_identifier(column) for column in selected)
+    rows = conn.execute(
+        f"SELECT {select_sql} FROM line_messages GROUP BY {group_by} LIMIT 1000"
+    ).fetchall()
+    for row in rows:
+        speaker_name = str(row[sender_col]) if row[sender_col] is not None else ""
+        chat_id = str(row[chat_col]) if chat_col and row[chat_col] is not None else ""
+        candidate_hash = hashlib.sha256(f"{chat_id}|{speaker_name}".encode("utf-8")).hexdigest()[:12]
+        if candidate_hash == source_hash:
+            return speaker_name, chat_id or None
+    return None
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _line_summary(text: object, query: str) -> str:
