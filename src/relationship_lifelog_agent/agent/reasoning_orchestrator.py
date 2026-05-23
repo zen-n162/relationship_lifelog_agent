@@ -7,6 +7,7 @@ from typing import Any
 from relationship_lifelog_agent.adapters.types import EvidenceItem
 from relationship_lifelog_agent.agent.answerability import AnswerabilityReport, check_answerability
 from relationship_lifelog_agent.agent.answer_composer import compose_answer_with_llm
+from relationship_lifelog_agent.agent.agent_runtime import PRIVATE_FULL_MODES, run_agent, stream_run_agent
 from relationship_lifelog_agent.agent.conversation_state import ConversationState
 from relationship_lifelog_agent.agent.executor import ReviewTarget, answer_chat
 from relationship_lifelog_agent.agent.information_needs import InformationNeed
@@ -48,6 +49,17 @@ def stream_answer(
     llm_client: LocalLlmClient | None = None,
 ):
     current_state = ConversationState.from_value(state)
+    if settings.analysis.mode in PRIVATE_FULL_MODES:
+        yield from stream_run_agent(
+            question,
+            current_state,
+            settings,
+            selected_profile_id=selected_profile_id,
+            date_from=date_from,
+            date_to=date_to,
+            llm_client=llm_client,
+        )
+        return
     usage = LlmUsageTrace.from_settings(settings.llm)
     client = llm_client or LocalLlmClient(settings.llm)
 
@@ -203,6 +215,17 @@ def answer_with_reasoning(
     llm_client: LocalLlmClient | None = None,
 ) -> ChatResponse:
     current_state = ConversationState.from_value(state)
+    if settings.analysis.mode in PRIVATE_FULL_MODES:
+        runtime_run = run_agent(
+            question,
+            current_state,
+            settings,
+            selected_profile_id=selected_profile_id,
+            date_from=date_from,
+            date_to=date_to,
+            llm_client=llm_client,
+        )
+        return _runtime_response(runtime_run, mode=mode, show_debug=show_debug)
     usage = LlmUsageTrace.from_settings(settings.llm)
     client = llm_client or LocalLlmClient(settings.llm)
     frame = understand_question(question, current_state, settings=settings, llm_client=client, usage=usage)
@@ -363,6 +386,21 @@ def _response(
         cautions=tuple(answerability.warnings),
         conversation_state=state,
         review_targets=review_targets,
+        debug_info=debug_info,
+    )
+
+
+def _runtime_response(runtime_run: Any, *, mode: str, show_debug: bool) -> ChatResponse:
+    debug_info = runtime_run.debug_info if show_debug else None
+    return ChatResponse(
+        answer_markdown=sanitize_answer(runtime_run.answer_markdown, mode=mode),
+        reasoning_summary=f"private_full_runtime: {runtime_run.status}",
+        information_needs=(),
+        query_plan_summary="\n".join(f"- {task_id}" for task_id in runtime_run.completed_task_order),
+        evidence_items=(),
+        cautions=tuple([runtime_run.stop_reason] if runtime_run.stop_reason else ()),
+        conversation_state=runtime_run.conversation_state,
+        review_targets=(),
         debug_info=debug_info,
     )
 
