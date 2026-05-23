@@ -31,8 +31,13 @@ from relationship_lifelog_agent.full_context.batch_builder import (
     validate_batch_coverage,
 )
 from relationship_lifelog_agent.full_context.context_budget import decide_context_mode
+from relationship_lifelog_agent.full_context.full_range_analyzer import (
+    FullRangeAnalysisError,
+    analyze_single_context,
+)
 from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
 from relationship_lifelog_agent.full_context.prompt_packer import build_single_context_prompt
+from relationship_lifelog_agent.llm.local_client import LocalLlmClient
 from relationship_lifelog_agent.llm.status import render_llm_status_json, render_llm_status_text, run_llm_status
 from relationship_lifelog_agent.privacy.raw_payload_policy import from_config as raw_payload_policy_from_config
 from relationship_lifelog_agent.profiles import load_profile_context
@@ -288,7 +293,7 @@ def _full_context_main(argv: list[str]) -> None:
     parser = _build_full_context_parser()
     args = parser.parse_args(argv)
     settings = load_config(args.config)
-    if args.full_context_command in {"plan", "pack-preview"}:
+    if args.full_context_command in {"plan", "pack-preview", "analyze"}:
         run_id = f"full-context-plan-{uuid4().hex[:12]}"
         manifest = build_full_data_manifest(
             run_id=run_id,
@@ -355,6 +360,38 @@ def _full_context_main(argv: list[str]) -> None:
             raw_payload_policy=policy,
         )
         _print_full_context_pack_preview(bundle, manifest, args.max_preview_chars)
+        return
+    if args.full_context_command == "analyze":
+        policy = raw_payload_policy_from_config(settings)
+        if args.dry_run == "true":
+            _print_full_context_analyze_dry_run(manifest, settings.analysis.mode)
+            return
+        if not policy.private_full_enabled:
+            raise SystemExit("full-context analyze requires analysis.mode private_full_range or private_full_corpus")
+        bundle = build_single_context_prompt(
+            question=args.question,
+            profile_context={"profile_id": args.profile_id},
+            manifest=replace(manifest, raw_payload_policy=policy.to_dict()),
+            full_data={
+                "line_items": (),
+                "note_items": (),
+                "media_items": (),
+                "face_items": (),
+                "location_items": (),
+            },
+            raw_payload_policy=policy,
+        )
+        try:
+            synthesis = analyze_single_context(
+                question=args.question,
+                manifest=manifest,
+                prompt_bundle=bundle,
+                llm_client=LocalLlmClient(settings.llm),
+                max_llm_calls=args.max_llm_calls,
+            )
+        except FullRangeAnalysisError as exc:
+            raise SystemExit(str(exc)) from exc
+        _print_full_context_analysis_result(synthesis)
         return
     parser.error("unknown full-context command")
 
@@ -508,6 +545,13 @@ def _build_full_context_parser() -> argparse.ArgumentParser:
     preview.add_argument("--date-to", required=True)
     preview.add_argument("--question", default="Summarize the selected private full context range.")
     preview.add_argument("--max-preview-chars", type=int, default=2000)
+    analyze = full_context_sub.add_parser("analyze", help="Analyze a private full-context range with the local LLM.")
+    analyze.add_argument("--profile-id", required=True, type=int)
+    analyze.add_argument("--date-from", required=True)
+    analyze.add_argument("--date-to", required=True)
+    analyze.add_argument("--question", required=True)
+    analyze.add_argument("--dry-run", choices=("true", "false"), default="true")
+    analyze.add_argument("--max-llm-calls", type=int, default=5)
     return parser
 
 
@@ -732,6 +776,30 @@ def _print_full_context_pack_preview(bundle: Any, manifest: Any, max_preview_cha
         print("[preview truncated; full prompt not displayed]")
     else:
         print("[preview complete; no raw upstream data was loaded]")
+
+
+def _print_full_context_analyze_dry_run(manifest: Any, analysis_mode: str) -> None:
+    print("Full Context Analyze Dry Run")
+    print(f"profile_id: {manifest.profile_id}")
+    print(f"date_range: {manifest.date_from}..{manifest.date_to}")
+    print(f"analysis_mode: {analysis_mode}")
+    print(f"recommended_mode: {manifest.recommended_mode}")
+    print(f"estimated_tokens: {manifest.estimated_tokens}")
+    print("llm_calls: 0")
+    print("note: dry-run true; local LLM was not called and no raw upstream data was loaded.")
+
+
+def _print_full_context_analysis_result(synthesis: Any) -> None:
+    print("Full Context Analysis Result")
+    print(f"summary: {synthesis.summary}")
+    print(f"confidence: {synthesis.confidence:.3f}")
+    print(f"source_refs: {len(synthesis.source_refs)}")
+    print(f"uncertainties: {len(synthesis.uncertainties)}")
+    if synthesis.uncertainties:
+        for item in synthesis.uncertainties:
+            print(f"- caution: {item}")
+    print("answer:")
+    print(synthesis.answer)
 
 
 if __name__ == "__main__":

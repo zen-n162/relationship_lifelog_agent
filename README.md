@@ -200,6 +200,24 @@ The preview reports prompt size, included payload types, source counts, raw text
 inclusion, and only the first preview characters. It does not log or cache the
 full prompt unless future explicit opt-in settings allow that.
 
+The first Full Range Analyzer entry point is also available. By default it runs
+as a dry run and does not call the local LLM:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context analyze \
+  --profile-id 1 \
+  --date-from 2024-12-01 \
+  --date-to 2024-12-31 \
+  --question "この期間に何があった？" \
+  --dry-run true
+```
+
+Set `--dry-run false` only after `analysis.mode` is explicitly
+`private_full_range` or `private_full_corpus` and the local Ollama model is
+configured. The analyzer requires structured JSON output, validates it with
+Pydantic schemas, preserves `source_ref`, and falls back to a cautious
+structured result if JSON validation fails.
+
 ## Upstream Schema Inspection
 
 Use schema inspection to check whether the upstream SQLite tables and columns

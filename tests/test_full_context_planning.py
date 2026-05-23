@@ -249,3 +249,27 @@ def test_full_context_pack_preview_cli_outputs_prompt_metadata(capsys) -> None:
     assert "raw_text_included: false" in output
     assert "prompt_logging_allowed: false" in output
     assert "raw_payload_cache_allowed: false" in output
+
+
+def test_full_context_analyze_dry_run_does_not_call_llm(capsys) -> None:
+    cli_main(
+        [
+            "full-context",
+            "analyze",
+            "--profile-id",
+            "1",
+            "--date-from",
+            "2024-12-01",
+            "--date-to",
+            "2024-12-31",
+            "--question",
+            "この期間に何があった？",
+            "--dry-run",
+            "true",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Full Context Analyze Dry Run" in output
+    assert "llm_calls: 0" in output
+    assert "local LLM was not called" in output

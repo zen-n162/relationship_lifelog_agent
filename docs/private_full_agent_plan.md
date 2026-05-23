@@ -724,6 +724,23 @@ Tests:
 Create `full_context/full_range_analyzer.py` and
 `llm/full_context_schemas.py`.
 
+Status: implemented as the first local LLM analyzer layer. It supports
+single-context analysis, iterative batch analysis, per-batch structured
+analysis, synthesis, Pydantic validation, retry/fallback behavior, source-ref
+filtering, and max LLM call budgets. It refuses to run for `safe_window`
+prompts.
+
+CLI:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml full-context analyze \
+  --profile-id 1 \
+  --date-from 2024-12-01 \
+  --date-to 2024-12-31 \
+  --question "この期間に何があった？" \
+  --dry-run true
+```
+
 Responsibilities:
 
 - single-context analysis if budget allows

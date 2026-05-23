@@ -13,6 +13,15 @@ from relationship_lifelog_agent.full_context.context_budget import (
     estimate_tokens_for_item,
     estimate_tokens_for_text,
 )
+from relationship_lifelog_agent.full_context.full_range_analyzer import (
+    FullRangeAnalysisError,
+    FullRangeBudgetExceeded,
+    LlmCallBudget,
+    analyze_batch,
+    analyze_iterative_batches,
+    analyze_single_context,
+    synthesize_full_range,
+)
 from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
 from relationship_lifelog_agent.full_context.prompt_packer import (
     build_batch_prompt,
@@ -45,6 +54,12 @@ __all__ = [
     "FullPromptBundle",
     "FullRangeSynthesis",
     "FullScanBatch",
+    "FullRangeAnalysisError",
+    "FullRangeBudgetExceeded",
+    "LlmCallBudget",
+    "analyze_batch",
+    "analyze_iterative_batches",
+    "analyze_single_context",
     "build_chronological_batches",
     "build_full_data_manifest",
     "build_hybrid_batches",
@@ -57,5 +72,6 @@ __all__ = [
     "estimate_tokens_for_item",
     "estimate_tokens_for_text",
     "sanitize_or_include_item_by_policy",
+    "synthesize_full_range",
     "validate_batch_coverage",
 ]
