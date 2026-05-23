@@ -16,6 +16,37 @@ adapter:
   allow_python_import: true
   copy_raw_upstream_data: false
 
+analysis:
+  mode: "safe_window"
+  default_scope: "ask_llm"
+  allow_full_corpus: true
+  allow_full_range: true
+  allow_single_context_full_prompt: true
+  allow_iterative_full_scan: true
+  full_scan:
+    batch_strategy: "hybrid"
+    max_items_per_batch: 200
+    max_chars_per_batch: 80000
+    overlap_items: 5
+    max_batches_per_run: 200
+    max_reanalysis_rounds: 5
+    summarize_after_each_batch: true
+    preserve_raw_refs: true
+
+private_full_llm_payload:
+  allow_raw_line_text: true
+  allow_raw_note_text: true
+  allow_photo_paths: true
+  allow_exact_gps: true
+  allow_face_crops: true
+  allow_face_embeddings: true
+  allow_raw_face_embedding_values: false
+  allow_private_file_paths: true
+  allow_unverified_person_candidates: true
+  allow_unverified_speaker_candidates: true
+  allow_full_prompt_logging: false
+  allow_raw_payload_cache: false
+
 paths:
   personal_lifelog_rag: "~/MyApplication/personal_lifelog_rag"
   notes_lifelog_rag: "~/MyApplication/notes_lifelog_rag"
@@ -61,6 +92,7 @@ llm:
   model: null
   base_url: "http://127.0.0.1:11434"
   temperature: 0.2
+  num_ctx: 32768
   max_context_items: 30
   enabled: false
   require_structured_output: true
@@ -70,3 +102,11 @@ llm:
   use_for_query_planning: false
   use_for_answer_composition: false
   timeout_seconds: 120
+
+vision:
+  enabled: false
+  provider: ollama
+  model: null
+  pass_images: false
+  pass_face_crops: false
+  max_images_per_batch: 10

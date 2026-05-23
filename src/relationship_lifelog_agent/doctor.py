@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 import importlib.util
 import json
 from pathlib import Path
@@ -14,13 +14,16 @@ import yaml
 from relationship_lifelog_agent.adapters.upstream_sqlite import UpstreamReadOnlyError, open_readonly_sqlite
 from relationship_lifelog_agent.config import (
     AdapterSettings,
+    AnalysisSettings,
     AppSettings,
     LlmSettings,
     PathSettings,
+    PrivateFullLlmPayloadSettings,
     PrivacySettings,
     RelationshipSettings,
     Settings,
     UiSettings,
+    VisionSettings,
 )
 
 
@@ -143,11 +146,17 @@ def _load_settings_unvalidated(config_path: Path | None) -> tuple[Settings, str 
             Settings(
                 app=_merge(AppSettings, data.get("app")),
                 adapter=_merge(AdapterSettings, data.get("adapter")),
+                analysis=_merge(AnalysisSettings, data.get("analysis")),
+                private_full_llm_payload=_merge(
+                    PrivateFullLlmPayloadSettings,
+                    data.get("private_full_llm_payload"),
+                ),
                 paths=_merge(PathSettings, data.get("paths")),
                 ui=_merge(UiSettings, data.get("ui")),
                 relationship=_merge(RelationshipSettings, data.get("relationship")),
                 privacy=_merge(PrivacySettings, data.get("privacy")),
                 llm=_merge(LlmSettings, data.get("llm")),
+                vision=_merge(VisionSettings, data.get("vision")),
             ),
             None,
         )
@@ -159,9 +168,18 @@ def _merge(cls: type, values: dict[str, Any] | None) -> Any:
     default = cls()
     if not isinstance(values, dict):
         return default
-    allowed = {item.name for item in fields(cls)}
-    clean = {key: value for key, value in values.items() if key in allowed}
-    return cls(**{**asdict(default), **clean})
+    merged: dict[str, Any] = {}
+    for item in fields(default):
+        default_value = getattr(default, item.name)
+        if item.name not in values:
+            merged[item.name] = default_value
+            continue
+        value = values[item.name]
+        if is_dataclass(default_value) and isinstance(value, dict):
+            merged[item.name] = _merge(type(default_value), value)
+        else:
+            merged[item.name] = value
+    return cls(**merged)
 
 
 def _check_file(name: str, path: Path, *, required: bool) -> DoctorCheck:

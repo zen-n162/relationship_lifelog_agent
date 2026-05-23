@@ -63,7 +63,7 @@ class LocalLlmClient:
             "messages": messages,
             "stream": False,
             "think": False,
-            "options": {"temperature": self.settings.temperature, "num_predict": 1200},
+            "options": {"temperature": self.settings.temperature, "num_ctx": self.settings.num_ctx, "num_predict": 1200},
         }
         if structured:
             payload["format"] = schema or "json"

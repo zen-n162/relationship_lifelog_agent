@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,45 @@ class AdapterSettings:
     allow_cli_subprocess: bool = True
     allow_python_import: bool = True
     copy_raw_upstream_data: bool = False
+
+
+@dataclass(frozen=True)
+class FullScanSettings:
+    batch_strategy: str = "hybrid"
+    max_items_per_batch: int = 200
+    max_chars_per_batch: int = 80000
+    overlap_items: int = 5
+    max_batches_per_run: int = 200
+    max_reanalysis_rounds: int = 5
+    summarize_after_each_batch: bool = True
+    preserve_raw_refs: bool = True
+
+
+@dataclass(frozen=True)
+class AnalysisSettings:
+    mode: str = "safe_window"
+    default_scope: str = "ask_llm"
+    allow_full_corpus: bool = True
+    allow_full_range: bool = True
+    allow_single_context_full_prompt: bool = True
+    allow_iterative_full_scan: bool = True
+    full_scan: FullScanSettings = field(default_factory=FullScanSettings)
+
+
+@dataclass(frozen=True)
+class PrivateFullLlmPayloadSettings:
+    allow_raw_line_text: bool = True
+    allow_raw_note_text: bool = True
+    allow_photo_paths: bool = True
+    allow_exact_gps: bool = True
+    allow_face_crops: bool = True
+    allow_face_embeddings: bool = True
+    allow_raw_face_embedding_values: bool = False
+    allow_private_file_paths: bool = True
+    allow_unverified_person_candidates: bool = True
+    allow_unverified_speaker_candidates: bool = True
+    allow_full_prompt_logging: bool = False
+    allow_raw_payload_cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,6 +122,7 @@ class LlmSettings:
     model: str | None = None
     base_url: str = "http://127.0.0.1:11434"
     temperature: float = 0.2
+    num_ctx: int = 32768
     max_context_items: int = 30
     enabled: bool = False
     require_structured_output: bool = True
@@ -95,23 +135,45 @@ class LlmSettings:
 
 
 @dataclass(frozen=True)
+class VisionSettings:
+    enabled: bool = False
+    provider: str = "ollama"
+    model: str | None = None
+    pass_images: bool = False
+    pass_face_crops: bool = False
+    max_images_per_batch: int = 10
+
+
+@dataclass(frozen=True)
 class Settings:
     app: AppSettings = field(default_factory=AppSettings)
     adapter: AdapterSettings = field(default_factory=AdapterSettings)
+    analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
+    private_full_llm_payload: PrivateFullLlmPayloadSettings = field(default_factory=PrivateFullLlmPayloadSettings)
     paths: PathSettings = field(default_factory=PathSettings)
     ui: UiSettings = field(default_factory=UiSettings)
     relationship: RelationshipSettings = field(default_factory=RelationshipSettings)
     privacy: PrivacySettings = field(default_factory=PrivacySettings)
     llm: LlmSettings = field(default_factory=LlmSettings)
+    vision: VisionSettings = field(default_factory=VisionSettings)
 
 
 def _merge_dataclass(cls: type, values: dict[str, Any] | None) -> Any:
     defaults = cls()
-    if not values:
+    if not values or not isinstance(values, dict):
         return defaults
-    allowed = defaults.__dataclass_fields__.keys()
-    clean = {key: value for key, value in values.items() if key in allowed}
-    return cls(**{**defaults.__dict__, **clean})
+    merged: dict[str, Any] = {}
+    for item in fields(defaults):
+        default_value = getattr(defaults, item.name)
+        if item.name not in values:
+            merged[item.name] = default_value
+            continue
+        value = values[item.name]
+        if is_dataclass(default_value) and isinstance(value, dict):
+            merged[item.name] = _merge_dataclass(type(default_value), value)
+        else:
+            merged[item.name] = value
+    return cls(**merged)
 
 
 def load_config(path: str | Path | None = None) -> Settings:
@@ -124,11 +186,17 @@ def load_config(path: str | Path | None = None) -> Settings:
     settings = Settings(
         app=_merge_dataclass(AppSettings, data.get("app")),
         adapter=_merge_dataclass(AdapterSettings, data.get("adapter")),
+        analysis=_merge_dataclass(AnalysisSettings, data.get("analysis")),
+        private_full_llm_payload=_merge_dataclass(
+            PrivateFullLlmPayloadSettings,
+            data.get("private_full_llm_payload"),
+        ),
         paths=_merge_dataclass(PathSettings, data.get("paths")),
         ui=_merge_dataclass(UiSettings, data.get("ui")),
         relationship=_merge_dataclass(RelationshipSettings, data.get("relationship")),
         privacy=_merge_dataclass(PrivacySettings, data.get("privacy")),
         llm=_merge_dataclass(LlmSettings, data.get("llm")),
+        vision=_merge_dataclass(VisionSettings, data.get("vision")),
     )
     validate_local_safety(settings)
     return settings
@@ -151,12 +219,24 @@ def validate_local_safety(settings: Settings) -> None:
         raise ValueError("Raw upstream data must not be copied.")
     if settings.adapter.backend == "upstream_readonly" and not settings.adapter.allow_sqlite_readonly:
         raise ValueError("upstream_readonly requires allow_sqlite_readonly=true.")
+    if settings.analysis.mode not in {"safe_window", "private_full_range", "private_full_corpus"}:
+        raise ValueError("Analysis mode must be safe_window, private_full_range, or private_full_corpus.")
+    if settings.analysis.mode == "private_full_range" and not settings.analysis.allow_full_range:
+        raise ValueError("private_full_range requires allow_full_range=true.")
+    if settings.analysis.mode == "private_full_corpus" and not settings.analysis.allow_full_corpus:
+        raise ValueError("private_full_corpus requires allow_full_corpus=true.")
+    if settings.analysis.full_scan.batch_strategy not in {"chronological", "source_then_time", "hybrid"}:
+        raise ValueError("full_scan.batch_strategy must be chronological, source_then_time, or hybrid.")
     if settings.ui.show_raw_llm_thinking:
         raise ValueError("Raw LLM thinking must not be shown.")
     if settings.llm.provider not in {"local", "ollama"}:
         raise ValueError("LLM provider must be local or ollama.")
     if settings.llm.enabled and not _is_local_llm_url(settings.llm.base_url):
         raise ValueError("LLM base_url must point to 127.0.0.1 or localhost.")
+    if settings.vision.provider not in {"ollama"}:
+        raise ValueError("Vision provider must be ollama.")
+    if settings.vision.enabled and settings.vision.model and not _is_local_llm_url(settings.llm.base_url):
+        raise ValueError("Vision model access must use a local LLM base_url.")
 
 
 def _is_local_llm_url(base_url: str) -> bool:

@@ -163,6 +163,10 @@ Plan -> Execute -> Observe -> Analyze -> Replan -> Answer
 
 See `docs/private_full_agent_plan.md` for the migration plan.
 
+The config layer already accepts `analysis`, `private_full_llm_payload`,
+`llm.num_ctx`, and `vision` sections. These are scaffolding for future private
+full runtime work; the app still defaults to `safe_window`.
+
 ## Upstream Schema Inspection
 
 Use schema inspection to check whether the upstream SQLite tables and columns

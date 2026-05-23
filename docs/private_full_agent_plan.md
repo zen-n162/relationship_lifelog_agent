@@ -547,6 +547,16 @@ Tests:
 
 Add config sections:
 
+Status:
+
+- `config.py` now reads `analysis`, nested `analysis.full_scan`,
+  `private_full_llm_payload`, `llm.num_ctx`, and `vision`.
+- `config.example.yaml` documents the new sections.
+- `full_context/types.py` defines the first full-context dataclasses.
+- `privacy/raw_payload_policy.py` centralizes mode-aware raw payload inclusion.
+- Full data access, batching, prompt packing, and LLM analysis remain future
+  phases.
+
 ```yaml
 analysis:
   mode: safe_window
