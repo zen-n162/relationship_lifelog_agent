@@ -424,7 +424,7 @@
           <span class="num">2</span>
           <div>
             <strong>Question understanding</strong>
-            <p>質問文からintent、対象profile名、date range、直前回答への参照、必要な出力、安全リスクを抽出します。LLMなしのルールベースfallbackで動作します。</p>
+            <p>質問文からintent、対象profile名、date range、直前回答への参照、必要な出力、安全リスクを抽出します。設定済みの場合はlocal Ollamaで補助し、失敗時はルールベースfallbackで動作します。</p>
           </div>
         </div>
         <div class="flow-step">
@@ -492,7 +492,7 @@
             <tr>
               <td><code>agent/</code></td>
               <td>会話理解、profile解決、回答可能性判定、計画、実行、回答生成を担当します。</td>
-              <td>ConversationState、QuestionFrame、ProfileResolver、AnswerabilityReport、InformationNeed、Evidence Contract、Tool Registry、Reasoning Orchestratorを実装済みです。LLMなしで動き、local LLMは将来のQuestionFrame補助に限定します。</td>
+              <td>ConversationState、QuestionFrame、ProfileResolver、AnswerabilityReport、InformationNeed、Evidence Contract、Tool Registry、Reasoning Orchestratorを実装済みです。LLMなしで動き、設定済みのlocal OllamaはQuestionFrame、必要情報、QueryPlan、回答文整形の補助に限定します。</td>
             </tr>
             <tr>
               <td><code>analytics/</code></td>
@@ -664,6 +664,9 @@ python -m relationship_lifelog_agent.cli db restore \
       <p>継続評価はmock backendで安定実行できます。public/private安全性、禁止表現、根拠の有無、弱い根拠への注意、関係ラベル推定の抑制を確認します。</p>
       <pre><code>python eval/run_eval.py
 python eval/run_eval.py --format json --output data/exports/eval_result.json</code></pre>
+      <p>local LLMを使う場合は、Ollama接続とstructured outputを安全に確認できます。このstatus checkはprivate lifelog本文を送りません。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli --config config.local.yaml llm status
+python -m relationship_lifelog_agent.cli --config config.local.yaml llm status --format json</code></pre>
       <pre><code>pytest</code></pre>
     </section>
 
@@ -672,7 +675,7 @@ python eval/run_eval.py --format json --output data/exports/eval_result.json</co
       <ul>
         <li>上流アプリ接続はadapter境界の内側に限定し、SQLiteは<code>mode=ro</code>のread-only接続で扱います。</li>
         <li>adapter evidenceは<code>source_pointer</code>、<code>source_type</code>、<code>sensitivity</code>、<code>confidence</code>、<code>evidence_strength</code>を持ちます。</li>
-        <li>LLMを使う場合もlocal LLMをユーザー設定でのみ利用し、分類補助や要約補助に限定します。</li>
+        <li>LLMを使う場合もlocal Ollamaをユーザー設定でのみ利用し、QuestionFrame、InformationNeed、QueryPlan、回答文整形の補助に限定します。失敗時はrule-based fallbackで動きます。</li>
         <li>顔identity、LINE speaker identity、relationship labelはAIで自動推定しません。</li>
         <li>仕様、intent、DB schema、安全方針、UI挙動が変わったら、このHTML説明も更新します。</li>
       </ul>

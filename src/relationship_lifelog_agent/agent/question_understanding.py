@@ -5,6 +5,27 @@ import re
 
 from relationship_lifelog_agent.agent.conversation_state import ConversationState
 from relationship_lifelog_agent.agent.router import route_question
+from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.llm.local_client import LocalLlmClient
+from relationship_lifelog_agent.llm.prompts import SYSTEM_POLICY
+from relationship_lifelog_agent.llm.schemas import QUESTION_FRAME_SCHEMA
+from relationship_lifelog_agent.llm.usage import LlmUsageTrace
+
+
+ALLOWED_INTENTS = {
+    "conflict_frequency",
+    "conflict_timeline",
+    "post_conflict_activity",
+    "emotional_note_lookup",
+    "monthly_relationship_review",
+    "general_relationship_qa",
+    "evidence_lookup",
+    "reply_delay_analysis",
+    "reconciliation_duration",
+    "promise_tracking",
+    "outing_history",
+    "relationship_memory_search",
+}
 
 
 @dataclass(frozen=True)
@@ -27,8 +48,19 @@ class QuestionFrame:
         return self.intents[0] if self.intents else "general_relationship_qa"
 
 
-def understand_question(question: str, state: ConversationState | None = None) -> QuestionFrame:
+def understand_question(
+    question: str,
+    state: ConversationState | None = None,
+    *,
+    settings: Settings | None = None,
+    llm_client: LocalLlmClient | None = None,
+    usage: LlmUsageTrace | None = None,
+) -> QuestionFrame:
     clean = " ".join(str(question or "").strip().split())
+    if settings and _should_use_llm(settings, llm_client):
+        frame = _understand_with_llm(clean, state, llm_client, usage)
+        if frame is not None:
+            return frame
     normalized = clean.lower()
     route = route_question(clean)
     referenced = _references_previous_answer(normalized)
@@ -50,6 +82,113 @@ def understand_question(question: str, state: ConversationState | None = None) -
         requested_output=_requested_output(normalized, route.intents),
         needs_evidence=_needs_evidence(route.intents),
         risk_level=_risk_level(normalized),
+    )
+
+
+def _should_use_llm(settings: Settings, llm_client: LocalLlmClient | None) -> bool:
+    return bool(
+        settings.llm.enabled
+        and settings.llm.model
+        and settings.llm.use_for_question_understanding
+        and llm_client
+        and llm_client.is_configured()
+    )
+
+
+def _understand_with_llm(
+    question: str,
+    state: ConversationState | None,
+    llm_client: LocalLlmClient | None,
+    usage: LlmUsageTrace | None,
+) -> QuestionFrame | None:
+    assert llm_client is not None
+    prompt = {
+        "task": "Extract a safe QuestionFrame for the relationship evidence review app.",
+        "question": question,
+        "previous_observed_dates": list(state.last_observed_dates) if state else [],
+        "allowed_intents": sorted(ALLOWED_INTENTS),
+        "rules": [
+            "Do not infer relationship labels.",
+            "Do not infer person to LINE speaker links.",
+            "Return null for unknown profile names.",
+            "Use dates only if explicitly present or previous_observed_dates are referenced.",
+        ],
+    }
+    result = llm_client.chat(
+        [
+            {"role": "system", "content": SYSTEM_POLICY},
+            {"role": "user", "content": str(prompt)},
+        ],
+        schema=QUESTION_FRAME_SCHEMA,
+        expect_json=True,
+    )
+    if not result.ok or not isinstance(result.data, dict):
+        if usage:
+            usage.record(
+                stage="question_understanding",
+                backend="rule",
+                success=False,
+                latency_ms=result.latency_ms,
+                structured_output_used=result.structured_output_used,
+                fallback_reason=result.error or "empty llm question frame",
+            )
+        return None
+    try:
+        frame = _frame_from_llm_data(question, result.data, state)
+    except ValueError as exc:
+        if usage:
+            usage.record(
+                stage="question_understanding",
+                backend="rule",
+                success=False,
+                latency_ms=result.latency_ms,
+                structured_output_used=result.structured_output_used,
+                fallback_reason=str(exc),
+            )
+        return None
+    if usage:
+        usage.record(
+            stage="question_understanding",
+            backend="llm",
+            success=True,
+            latency_ms=result.latency_ms,
+            structured_output_used=result.structured_output_used,
+            schema_validation_success=True,
+        )
+    return frame
+
+
+def _frame_from_llm_data(question: str, data: dict[str, object], state: ConversationState | None) -> QuestionFrame:
+    clean = " ".join(question.strip().split())
+    normalized = clean.lower()
+    raw_intents = data.get("intents")
+    if isinstance(raw_intents, str):
+        raw_intents = [raw_intents]
+    if not isinstance(raw_intents, list):
+        raw_intent = data.get("intent")
+        raw_intents = [raw_intent] if isinstance(raw_intent, str) else []
+    intents = tuple(dict.fromkeys(str(intent) for intent in raw_intents if isinstance(intent, str) and intent in ALLOWED_INTENTS))
+    if not intents:
+        intents = route_question(clean).intents
+    referenced = bool(data.get("referenced_previous_answer"))
+    date_from = _clean_date_value(data.get("date_from"))
+    date_to = _clean_date_value(data.get("date_to"))
+    if referenced and not date_from and state and state.last_observed_dates:
+        date_from = state.last_observed_dates[0]
+        date_to = state.last_observed_dates[0]
+    return QuestionFrame(
+        raw_question=clean,
+        normalized_question=normalized,
+        intents=intents,
+        target_profile_name=_clean_optional_text(data.get("target_profile_name")) or _extract_target_profile_name(clean),
+        target_profile_id=_extract_profile_id(clean),
+        date_from=date_from,
+        date_to=date_to,
+        referenced_previous_answer=referenced or _references_previous_answer(normalized),
+        referenced_event_id=_extract_event_id(clean),
+        requested_output=_allowed_requested_output(data.get("requested_output")) or _requested_output(normalized, intents),
+        needs_evidence=bool(data.get("needs_evidence", _needs_evidence(intents))),
+        risk_level=_allowed_risk_level(data.get("risk_level")) or _risk_level(normalized),
     )
 
 
@@ -76,6 +215,40 @@ def _extract_date_range(question: str) -> tuple[str | None, str | None]:
         month = int(month_match.group(2))
         return f"{year:04d}-{month:02d}-01", None
     return None, None
+
+
+def _clean_date_value(value: object) -> str | None:
+    text = _clean_optional_text(value)
+    if not text:
+        return None
+    match = re.fullmatch(r"20\d{2}-\d{2}-\d{2}", text)
+    return text if match else None
+
+
+def _clean_optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "null":
+        return None
+    return text[:80]
+
+
+def _allowed_requested_output(value: object) -> str | None:
+    text = _clean_optional_text(value)
+    allowed = {
+        "answer",
+        "aggregate_with_examples",
+        "line_detail_summary",
+        "note_context_summary",
+        "evidence_detail_summary",
+    }
+    return text if text in allowed else None
+
+
+def _allowed_risk_level(value: object) -> str | None:
+    text = _clean_optional_text(value)
+    return text if text in {"relationship_private", "general_private"} else None
 
 
 def _extract_profile_id(question: str) -> int | None:

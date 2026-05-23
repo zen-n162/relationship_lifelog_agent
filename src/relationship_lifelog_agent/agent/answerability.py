@@ -7,6 +7,10 @@ from relationship_lifelog_agent.agent.information_needs import InformationNeed, 
 from relationship_lifelog_agent.agent.profile_resolver import ProfileResolution
 from relationship_lifelog_agent.agent.question_understanding import QuestionFrame
 from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.llm.local_client import LocalLlmClient
+from relationship_lifelog_agent.llm.prompts import SYSTEM_POLICY
+from relationship_lifelog_agent.llm.schemas import INFORMATION_NEEDS_SCHEMA
+from relationship_lifelog_agent.llm.usage import LlmUsageTrace
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,11 @@ def check_answerability(
     frame: QuestionFrame,
     profile_resolution: ProfileResolution,
     settings: Settings,
+    *,
+    llm_client: LocalLlmClient | None = None,
+    usage: LlmUsageTrace | None = None,
 ) -> AnswerabilityReport:
+    _record_llm_information_need_suggestions(frame, settings, llm_client, usage)
     needs: list[InformationNeed] = []
     warnings: list[str] = list(profile_resolution.warnings)
     if profile_resolution.status == "ambiguous_profile":
@@ -115,6 +123,61 @@ def check_answerability(
     if self_speaker_status == "missing":
         return AnswerabilityReport("partially_answerable", tuple(needs), tuple(warnings))
     return AnswerabilityReport("answerable", tuple(needs), tuple(warnings))
+
+
+def _record_llm_information_need_suggestions(
+    frame: QuestionFrame,
+    settings: Settings,
+    llm_client: LocalLlmClient | None,
+    usage: LlmUsageTrace | None,
+) -> None:
+    if not (
+        settings.llm.enabled
+        and settings.llm.model
+        and settings.llm.use_for_information_needs
+        and llm_client
+        and llm_client.is_configured()
+    ):
+        return
+    prompt = {
+        "task": "Suggest information needs for answering this relationship evidence question.",
+        "question": frame.raw_question,
+        "intents": list(frame.intents),
+        "rules": [
+            "Suggest needs only; Python code will verify available or missing status.",
+            "Do not infer relationship labels.",
+            "Do not infer person to LINE speaker links.",
+            "Do not request raw LINE or raw note text.",
+        ],
+    }
+    result = llm_client.chat(
+        [
+            {"role": "system", "content": SYSTEM_POLICY},
+            {"role": "user", "content": str(prompt)},
+        ],
+        schema=INFORMATION_NEEDS_SCHEMA,
+        expect_json=True,
+    )
+    if not result.ok or not isinstance(result.data, dict):
+        if usage:
+            usage.record(
+                stage="information_needs",
+                backend="rule",
+                success=False,
+                latency_ms=result.latency_ms,
+                structured_output_used=result.structured_output_used,
+                fallback_reason=result.error or "invalid llm information needs",
+            )
+        return
+    if usage:
+        usage.record(
+            stage="information_needs",
+            backend="llm",
+            success=True,
+            latency_ms=result.latency_ms,
+            structured_output_used=result.structured_output_used,
+            schema_validation_success=True,
+        )
 
 
 def _upstream_status(settings: Settings) -> str:

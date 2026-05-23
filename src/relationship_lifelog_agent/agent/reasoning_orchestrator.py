@@ -6,6 +6,7 @@ from typing import Any
 
 from relationship_lifelog_agent.adapters.types import EvidenceItem
 from relationship_lifelog_agent.agent.answerability import AnswerabilityReport, check_answerability
+from relationship_lifelog_agent.agent.answer_composer import compose_answer_with_llm
 from relationship_lifelog_agent.agent.conversation_state import ConversationState
 from relationship_lifelog_agent.agent.executor import ReviewTarget, answer_chat
 from relationship_lifelog_agent.agent.information_needs import InformationNeed
@@ -13,6 +14,8 @@ from relationship_lifelog_agent.agent.profile_resolver import ProfileResolution,
 from relationship_lifelog_agent.agent.query_planner import ConversationQueryPlan, build_conversation_query_plan
 from relationship_lifelog_agent.agent.question_understanding import QuestionFrame, understand_question
 from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.llm.local_client import LocalLlmClient
+from relationship_lifelog_agent.llm.usage import LlmUsageTrace
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
 
 
@@ -41,15 +44,19 @@ def answer_with_reasoning(
     state: ConversationState | dict[str, Any] | None = None,
     memory: object | None = None,
     show_debug: bool = False,
+    llm_client: LocalLlmClient | None = None,
 ) -> ChatResponse:
     current_state = ConversationState.from_value(state)
-    frame = understand_question(question, current_state)
+    usage = LlmUsageTrace.from_settings(settings.llm)
+    client = llm_client or LocalLlmClient(settings.llm)
+    frame = understand_question(question, current_state, settings=settings, llm_client=client, usage=usage)
     frame = _override_frame_dates(frame, date_from=date_from, date_to=date_to)
     profile_resolution = resolve_profile(settings, frame, selected_profile_id=selected_profile_id)
-    answerability = check_answerability(frame, profile_resolution, settings)
-    plan = build_conversation_query_plan(frame, answerability)
+    answerability = check_answerability(frame, profile_resolution, settings, llm_client=client, usage=usage)
+    plan = build_conversation_query_plan(frame, answerability, settings=settings, llm_client=client, usage=usage)
     if not answerability.can_execute:
         answer = _missing_information_answer(frame, profile_resolution, answerability, mode=mode)
+        answer = _append_llm_usage_summary(answer, usage)
         response_state = _updated_state(
             current_state,
             frame=frame,
@@ -59,7 +66,7 @@ def answer_with_reasoning(
             answer_markdown=answer,
             review_targets=(),
         )
-        return _response(answer, frame, answerability, plan, response_state, (), mode=mode, show_debug=show_debug)
+        return _response(answer, frame, answerability, plan, response_state, (), mode=mode, show_debug=show_debug, usage=usage)
 
     chat_answer = answer_chat(
         frame.raw_question,
@@ -71,7 +78,17 @@ def answer_with_reasoning(
         date_to=frame.date_to,
         post_conflict_window_days=post_conflict_window_days,
     )
-    answer = _append_reasoning_sections(chat_answer.text, answerability, plan, mode=mode, show_debug=show_debug)
+    person_names = [profile_resolution.profile.profile_name] if profile_resolution.profile else None
+    composed = compose_answer_with_llm(
+        chat_answer.text,
+        question=frame.raw_question,
+        settings=settings,
+        llm_client=client,
+        usage=usage,
+        mode=mode,
+        person_names=person_names,
+    )
+    answer = _append_reasoning_sections(composed, answerability, plan, usage=usage, mode=mode, show_debug=show_debug)
     response_state = _updated_state(
         current_state,
         frame=frame,
@@ -90,6 +107,7 @@ def answer_with_reasoning(
         chat_answer.review_targets,
         mode=mode,
         show_debug=show_debug,
+        usage=usage,
     )
 
 
@@ -143,10 +161,12 @@ def _append_reasoning_sections(
     answerability: AnswerabilityReport,
     plan: ConversationQueryPlan,
     *,
+    usage: LlmUsageTrace,
     mode: str,
     show_debug: bool,
 ) -> str:
     sections = [
+        "LLM利用:\n- " + usage.user_summary(),
         "<details>\n<summary>確認した情報</summary>\n\n" + _needs_markdown(answerability.available_needs) + "\n\n</details>",
         "<details>\n<summary>必要だった情報</summary>\n\n" + _needs_markdown(answerability.needs) + "\n\n</details>",
         "<details>\n<summary>実行した検索方針</summary>\n\n" + "\n".join(plan.summary_lines()) + "\n\n</details>",
@@ -154,8 +174,13 @@ def _append_reasoning_sections(
     if answerability.missing_needs:
         sections.append("<details>\n<summary>足りない情報</summary>\n\n" + _needs_markdown(answerability.missing_needs) + "\n\n</details>")
     if show_debug:
-        sections.append("<details>\n<summary>Debug reasoning</summary>\n\n```text\n" + str(plan.to_debug_dict()) + "\n```\n\n</details>")
+        debug_payload = {**plan.to_debug_dict(), "llm_usage": usage.to_dict()}
+        sections.append("<details>\n<summary>Debug reasoning</summary>\n\n```text\n" + str(debug_payload) + "\n```\n\n</details>")
     return sanitize_answer(answer + "\n\n" + "\n\n".join(sections), mode=mode)
+
+
+def _append_llm_usage_summary(answer: str, usage: LlmUsageTrace) -> str:
+    return answer + "\n\nLLM利用:\n- " + usage.user_summary()
 
 
 def _response(
@@ -168,8 +193,9 @@ def _response(
     *,
     mode: str,
     show_debug: bool,
+    usage: LlmUsageTrace,
 ) -> ChatResponse:
-    debug_info = plan.to_debug_dict() if show_debug else None
+    debug_info = {**plan.to_debug_dict(), "llm_usage": usage.to_dict()} if show_debug else None
     return ChatResponse(
         answer_markdown=sanitize_answer(answer_markdown, mode=mode),
         reasoning_summary=f"{frame.primary_intent}: {answerability.status}",

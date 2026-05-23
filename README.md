@@ -76,6 +76,43 @@ paths or missing manual profiles. `ERROR` means unsafe or unusable settings, suc
 as `allow_gradio_share: true`, external API permission, model auto-download, or
 a failed read-only upstream DB connection. Keep `config.local.yaml` out of git.
 
+## Local LLM / Ollama
+
+The Conversation-aware Planning Agent can optionally call a local Ollama model
+for question understanding, information-need suggestions, query-plan drafting,
+and answer phrasing. This is opt-in only. The app still keeps profile
+resolution, identity links, counts, dates, reply-delay metrics, evidence
+evaluation, and privacy redaction in Python/SQL. If the local LLM fails or
+returns invalid JSON, the rule-based fallback remains active.
+
+The LLM client only accepts local URLs such as `http://127.0.0.1:11434`, never
+downloads models, and never calls cloud APIs.
+
+```yaml
+llm:
+  provider: ollama
+  model: null
+  base_url: "http://127.0.0.1:11434"
+  enabled: false
+  require_structured_output: true
+  fallback_to_rules: true
+  use_for_question_understanding: false
+  use_for_information_needs: false
+  use_for_query_planning: false
+  use_for_answer_composition: false
+```
+
+Check local LLM wiring without sending private lifelog data:
+
+```bash
+python -m relationship_lifelog_agent.cli --config config.local.yaml llm status
+python -m relationship_lifelog_agent.cli --config config.local.yaml llm status --format json
+```
+
+In Chat UI debug mode, answers include an LLM usage trace showing which stages
+used `llm` versus `rule`/`template`, call count, fallback reasons, structured
+output status, and latency.
+
 ## Upstream Schema Inspection
 
 Use schema inspection to check whether the upstream SQLite tables and columns
@@ -258,6 +295,7 @@ extracted candidates.
   and `private` report levels plus explicit `--write` candidate saves.
 - Relationship DB-only backup/list/restore commands for rollback after explicit writes.
 - Review-aware ranking that prioritizes human-reviewed events and excludes rejected events.
+- Optional local Ollama integration for structured planning assistance with rule-based fallback.
 - Deterministic relationship QA answers with cautious language.
 - SQLite schema and repository helpers.
 - Public-mode redaction for names, relationship labels, GPS, paths, and raw excerpts.

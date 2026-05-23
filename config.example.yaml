@@ -49,7 +49,16 @@ privacy:
   forbid_public_relationship_labels: true
 
 llm:
-  provider: local
+  provider: ollama
   model: null
+  base_url: "http://127.0.0.1:11434"
   temperature: 0.2
   max_context_items: 30
+  enabled: false
+  require_structured_output: true
+  fallback_to_rules: true
+  use_for_question_understanding: false
+  use_for_information_needs: false
+  use_for_query_planning: false
+  use_for_answer_composition: false
+  timeout_seconds: 120

@@ -73,8 +73,17 @@ class PrivacySettings:
 class LlmSettings:
     provider: str = "local"
     model: str | None = None
+    base_url: str = "http://127.0.0.1:11434"
     temperature: float = 0.2
     max_context_items: int = 30
+    enabled: bool = False
+    require_structured_output: bool = True
+    fallback_to_rules: bool = True
+    use_for_question_understanding: bool = False
+    use_for_information_needs: bool = False
+    use_for_query_planning: bool = False
+    use_for_answer_composition: bool = False
+    timeout_seconds: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -134,6 +143,19 @@ def validate_local_safety(settings: Settings) -> None:
         raise ValueError("Raw upstream data must not be copied.")
     if settings.adapter.backend == "upstream_readonly" and not settings.adapter.allow_sqlite_readonly:
         raise ValueError("upstream_readonly requires allow_sqlite_readonly=true.")
+    if settings.llm.provider not in {"local", "ollama"}:
+        raise ValueError("LLM provider must be local or ollama.")
+    if settings.llm.enabled and not _is_local_llm_url(settings.llm.base_url):
+        raise ValueError("LLM base_url must point to 127.0.0.1 or localhost.")
+
+
+def _is_local_llm_url(base_url: str) -> bool:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return parsed.hostname in {"127.0.0.1", "localhost", "::1"}
 
 
 def gradio_launch_kwargs(settings: Settings, *, port: int | None = None) -> dict[str, Any]:

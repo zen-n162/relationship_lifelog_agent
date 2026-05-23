@@ -6,6 +6,12 @@ from typing import Any
 from relationship_lifelog_agent.agent.answerability import AnswerabilityReport
 from relationship_lifelog_agent.agent.evidence_contracts import EvidenceContract, evidence_contract_for_intent
 from relationship_lifelog_agent.agent.question_understanding import QuestionFrame
+from relationship_lifelog_agent.agent.tool_registry import list_tools
+from relationship_lifelog_agent.config import Settings
+from relationship_lifelog_agent.llm.local_client import LocalLlmClient
+from relationship_lifelog_agent.llm.prompts import SYSTEM_POLICY
+from relationship_lifelog_agent.llm.schemas import QUERY_PLAN_SCHEMA
+from relationship_lifelog_agent.llm.usage import LlmUsageTrace
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,10 @@ class ConversationQueryPlan:
 def build_conversation_query_plan(
     frame: QuestionFrame,
     answerability_report: AnswerabilityReport,
+    *,
+    settings: Settings | None = None,
+    llm_client: LocalLlmClient | None = None,
+    usage: LlmUsageTrace | None = None,
 ) -> ConversationQueryPlan:
     contract = evidence_contract_for_intent(frame.primary_intent)
     if not answerability_report.can_execute:
@@ -58,6 +68,9 @@ def build_conversation_query_plan(
             fallback_response=answerability_report.status,
             expected_answer_shape="missing_information_guidance",
         )
+    llm_plan = _build_llm_plan(frame, answerability_report, contract, settings, llm_client, usage)
+    if llm_plan is not None:
+        return llm_plan
     steps = [PlanStep("resolve_profile", "手動profileを確定します。", True, {}, "profile")]
     if frame.primary_intent in {"conflict_frequency", "conflict_timeline"}:
         steps.extend(
@@ -93,3 +106,118 @@ def build_conversation_query_plan(
         fallback_response=None,
         expected_answer_shape=frame.requested_output,
     )
+
+
+def _build_llm_plan(
+    frame: QuestionFrame,
+    answerability_report: AnswerabilityReport,
+    contract: EvidenceContract,
+    settings: Settings | None,
+    llm_client: LocalLlmClient | None,
+    usage: LlmUsageTrace | None,
+) -> ConversationQueryPlan | None:
+    if not (
+        settings
+        and settings.llm.enabled
+        and settings.llm.model
+        and settings.llm.use_for_query_planning
+        and llm_client
+        and llm_client.is_configured()
+    ):
+        return None
+    allowed_tools = tuple(tool.name for tool in list_tools())
+    prompt = {
+        "task": "Create a safe tool plan for this local relationship evidence review question.",
+        "question_frame": asdict(frame),
+        "answerability_status": answerability_report.status,
+        "allowed_tools": allowed_tools,
+        "rules": [
+            "Use only allowed_tools.",
+            "Do not include external API, web, file write, model download, or identity linking tools.",
+            "Counts, dates, profile resolution, and privacy redaction are done by Python.",
+        ],
+    }
+    result = llm_client.chat(
+        [
+            {"role": "system", "content": SYSTEM_POLICY},
+            {"role": "user", "content": str(prompt)},
+        ],
+        schema=QUERY_PLAN_SCHEMA,
+        expect_json=True,
+    )
+    if not result.ok or not isinstance(result.data, dict):
+        _record_plan_fallback(usage, result.latency_ms, result.structured_output_used, result.error or "empty llm plan")
+        return None
+    try:
+        steps = _plan_steps_from_llm(result.data, allowed_tools)
+    except ValueError as exc:
+        _record_plan_fallback(usage, result.latency_ms, result.structured_output_used, str(exc))
+        return None
+    if usage:
+        usage.record(
+            stage="query_planning",
+            backend="llm",
+            success=True,
+            latency_ms=result.latency_ms,
+            structured_output_used=result.structured_output_used,
+            schema_validation_success=True,
+        )
+    return ConversationQueryPlan(
+        question_frame=frame,
+        answerability_report=answerability_report,
+        plan_steps=steps,
+        evidence_contract=contract,
+        fallback_response=None,
+        expected_answer_shape=str(result.data.get("expected_answer_shape") or frame.requested_output),
+    )
+
+
+def _plan_steps_from_llm(data: dict[str, Any], allowed_tools: tuple[str, ...]) -> tuple[PlanStep, ...]:
+    raw_steps = data.get("plan_steps")
+    if not isinstance(raw_steps, list):
+        raw_steps = data.get("plan")
+    if not isinstance(raw_steps, list):
+        raw_steps = data.get("steps")
+    if not isinstance(raw_steps, list):
+        raw_steps = data.get("tools")
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise ValueError("llm returned no plan steps")
+    steps: list[PlanStep] = []
+    for raw in raw_steps:
+        if not isinstance(raw, dict):
+            raise ValueError("llm returned a malformed plan step")
+        tool_name = str(raw.get("tool_name") or raw.get("tool") or "")
+        if tool_name not in allowed_tools:
+            raise ValueError(f"llm returned disallowed tool: {tool_name}")
+        params = raw.get("params")
+        if not isinstance(params, dict):
+            params = raw.get("inputs")
+        steps.append(
+            PlanStep(
+                tool_name=tool_name,
+                purpose=str(raw.get("purpose") or raw.get("description") or "LLM suggested safe local step.")[:240],
+                required=bool(raw.get("required", True)),
+                params=params if isinstance(params, dict) else {},
+                output_key=str(raw.get("output_key") or tool_name)[:80],
+            )
+        )
+    if "compose_answer" not in {step.tool_name for step in steps}:
+        steps.append(PlanStep("compose_answer", "事実と推定を分けた安全な日本語回答を作ります。", True, {}, "answer"))
+    return tuple(steps)
+
+
+def _record_plan_fallback(
+    usage: LlmUsageTrace | None,
+    latency_ms: float,
+    structured_output_used: bool,
+    reason: str,
+) -> None:
+    if usage:
+        usage.record(
+            stage="query_planning",
+            backend="rule",
+            success=False,
+            latency_ms=latency_ms,
+            structured_output_used=structured_output_used,
+            fallback_reason=reason,
+        )

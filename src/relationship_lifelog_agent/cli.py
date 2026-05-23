@@ -22,6 +22,7 @@ from relationship_lifelog_agent.db.backup import (
 )
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.doctor import render_doctor_json, render_doctor_text, run_doctor
+from relationship_lifelog_agent.llm.status import render_llm_status_json, render_llm_status_text, run_llm_status
 from relationship_lifelog_agent.profiles import load_profile_context
 from relationship_lifelog_agent.upstream_identities import (
     IDENTITY_KINDS,
@@ -56,6 +57,9 @@ def main(argv: list[str] | None = None) -> None:
     if _is_db_command(args):
         _db_main(args)
         return
+    if _is_llm_command(args):
+        _llm_main(args)
+        return
     if _is_profile_command(args):
         _profile_main(args)
         return
@@ -75,6 +79,10 @@ def _is_upstream_command(args: list[str]) -> bool:
 
 def _is_db_command(args: list[str]) -> bool:
     return "db" in args
+
+
+def _is_llm_command(args: list[str]) -> bool:
+    return "llm" in args
 
 
 def _is_profile_command(args: list[str]) -> bool:
@@ -244,6 +252,19 @@ def _db_main(argv: list[str]) -> None:
         raise SystemExit(str(exc)) from exc
 
 
+def _llm_main(argv: list[str]) -> None:
+    parser = _build_llm_parser()
+    args = parser.parse_args(argv)
+    if args.llm_command == "status":
+        report = run_llm_status(args.config)
+        if args.format == "json":
+            print(render_llm_status_json(report))
+        else:
+            print(render_llm_status_text(report))
+        return
+    parser.error("unknown llm command")
+
+
 def _analyze_main(argv: list[str]) -> None:
     parser = _build_analyze_parser()
     args = parser.parse_args(argv)
@@ -362,6 +383,17 @@ def _build_db_parser() -> argparse.ArgumentParser:
     db_sub.add_parser("backups", help="List relationship DB backups without printing private paths.")
     restore = db_sub.add_parser("restore", help="Restore relationship DB from an explicit backup path.")
     restore.add_argument("--backup-path", required=True)
+    return parser
+
+
+def _build_llm_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Relationship Lifelog Agent local LLM CLI.")
+    parser.add_argument("--config", default=None, help="Optional private config path.")
+    subparsers = parser.add_subparsers(dest="resource", required=True)
+    llm = subparsers.add_parser("llm", help="Check local LLM configuration.")
+    llm_sub = llm.add_subparsers(dest="llm_command", required=True)
+    status = llm_sub.add_parser("status", help="Check Ollama/local LLM status without sending private data.")
+    status.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
