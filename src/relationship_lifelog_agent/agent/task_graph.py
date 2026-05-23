@@ -104,10 +104,24 @@ def private_full_task_graph() -> TaskGraph:
     graph = TaskGraph()
     for node in (
         TaskNode("understand_question", "understand_question"),
-        TaskNode("resolve_profile", "resolve_profile", ("understand_question",)),
+        TaskNode("decompose_compound_question", "decompose_compound_question", ("understand_question",), required=False),
+        TaskNode("resolve_profile", "resolve_profile", ("decompose_compound_question",)),
         TaskNode("determine_scope", "determine_scope", ("understand_question",)),
         TaskNode("check_answerability", "check_answerability", ("resolve_profile", "determine_scope")),
-        TaskNode("load_full_data", "load_full_data", ("check_answerability",)),
+        TaskNode("find_conflict_candidate_dates", "find_conflict_candidate_dates", ("check_answerability",), required=False),
+        TaskNode(
+            "build_surrounding_media_windows",
+            "build_surrounding_media_windows",
+            ("find_conflict_candidate_dates",),
+            required=False,
+        ),
+        TaskNode(
+            "analyze_surrounding_media",
+            "analyze_surrounding_media",
+            ("build_surrounding_media_windows",),
+            required=False,
+        ),
+        TaskNode("load_full_data", "load_full_data", ("analyze_surrounding_media",)),
         TaskNode("build_manifest", "build_manifest", ("load_full_data",)),
         TaskNode("decide_context_mode", "decide_context_mode", ("build_manifest",)),
         TaskNode("build_batches", "build_batches", ("decide_context_mode",)),

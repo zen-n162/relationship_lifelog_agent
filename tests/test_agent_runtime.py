@@ -12,6 +12,7 @@ from relationship_lifelog_agent.agent.observation_store import ObservationStore
 from relationship_lifelog_agent.agent.replanner import Replanner
 from relationship_lifelog_agent.agent.reasoning_orchestrator import answer_with_reasoning, stream_answer
 from relationship_lifelog_agent.agent.task_graph import TaskGraph, TaskNode
+from relationship_lifelog_agent.adapters.types import EventEvidence, LineEvidence, MediaEvidence
 from relationship_lifelog_agent.config import AnalysisSettings, LlmSettings, PathSettings, RelationshipSettings, Settings
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.llm.local_client import LocalLlmClient
@@ -142,6 +143,63 @@ def test_private_full_mode_stream_answer_uses_agent_runtime(tmp_path) -> None:
     assert "Agent Runtime" in events[-1].message
 
 
+def test_private_full_runtime_decomposes_compound_question_and_orders_q1_before_q2(tmp_path) -> None:
+    settings = _private_full_settings(tmp_path)
+
+    run = run_agent(
+        "いおりと喧嘩した日はいつ？その日の前後の日は写真から何をしていた？",
+        None,
+        settings,
+        memory=_CompoundRuntimeMemory(),
+    )
+
+    order = list(run.completed_task_order)
+    assert "decompose_compound_question" in order
+    assert order.index("find_conflict_candidate_dates") < order.index("build_surrounding_media_windows")
+    assert order.index("build_surrounding_media_windows") < order.index("analyze_surrounding_media")
+    decomposition = run.observations.latest("question_decomposition")
+    assert decomposition is not None
+    assert decomposition.data["dependencies"] == {"q2": "q1"}
+
+
+def test_private_full_runtime_builds_exact_surrounding_dates_and_excludes_out_of_range_media(tmp_path) -> None:
+    settings = _private_full_settings(tmp_path)
+
+    run = run_agent(
+        "いおりと喧嘩した日はいつ？その日の前後の日は写真から何をしていた？",
+        None,
+        settings,
+        memory=_CompoundRuntimeMemory(),
+    )
+
+    windows = run.observations.latest("surrounding_media_windows")
+    assert windows is not None
+    assert windows.data["surrounding_dates"] == ["2024-12-15", "2024-12-16", "2024-12-17"]
+    assert "2024-12-15" in run.answer_markdown
+    assert "2024-12-16" in run.answer_markdown
+    assert "2024-12-17" in run.answer_markdown
+    assert "2025-01-05" not in run.answer_markdown
+    assert "2026-02-09" not in run.answer_markdown
+
+
+def test_private_full_runtime_compound_answer_passes_final_verifier(tmp_path) -> None:
+    settings = _private_full_settings(tmp_path)
+
+    run = run_agent(
+        "いおりと喧嘩した日はいつ？その日の前後の日は写真から何をしていた？",
+        None,
+        settings,
+        memory=_CompoundRuntimeMemory(),
+    )
+
+    verification = run.observations.latest("final_answer_verification")
+    assert verification is not None
+    assert verification.data["ok"] is True
+    assert "質問分解:" in run.answer_markdown
+    assert "source_ref:" in run.answer_markdown
+    assert "前日/当日/翌日の写真分析:" in run.answer_markdown
+
+
 def test_safe_window_runtime_is_skipped(tmp_path) -> None:
     settings = _private_full_settings(tmp_path, analysis_mode="safe_window")
 
@@ -189,3 +247,65 @@ def _mock_full_synthesis_client(settings: Settings) -> LocalLlmClient:
         return {"message": {"content": json.dumps(content)}}
 
     return LocalLlmClient(settings.llm, http_post=_post)
+
+
+class _CompoundRuntimeMemory:
+    backend = "test"
+
+    def __init__(self) -> None:
+        self.personal = self
+        self.notes = self
+        self._events = (
+            EventEvidence(
+                source_id="runtime-conflict-2024-12-16",
+                date="2024-12-16",
+                event_type="minor_misunderstanding",
+                summary="短いLINE上の軽いすれ違い候補。",
+                severity=1,
+                confidence=0.62,
+                evidence_strength=0.62,
+            ),
+        )
+        self._line = (
+            LineEvidence(
+                source_id="runtime-line-2024-12-16",
+                date="2024-12-16",
+                summary="短い謝罪と予定確認がある軽いすれ違い候補。",
+                excerpt="短い謝罪と予定確認。",
+                confidence=0.62,
+            ),
+        )
+        self._media = (
+            MediaEvidence(source_id="runtime-media-before", date="2024-12-15", summary="家で過ごした写真候補。"),
+            MediaEvidence(source_id="runtime-media-after", date="2024-12-17", summary="カフェのような場所の写真候補。"),
+            MediaEvidence(source_id="runtime-media-outside-2025", date="2025-01-05", summary="範囲外media。"),
+            MediaEvidence(source_id="runtime-media-outside-2026", date="2026-02-09", summary="範囲外media。"),
+        )
+
+    def search_events(self, date_from=None, date_to=None, event_type=None, **_kwargs):
+        return [
+            item
+            for item in self._events
+            if (event_type is None or item.event_type == event_type)
+            and (not date_from or item.date >= date_from)
+            and (not date_to or item.date <= date_to)
+        ]
+
+    def search_line(self, _query="", date_from=None, date_to=None, **_kwargs):
+        return [
+            item
+            for item in self._line
+            if (not date_from or item.date >= date_from)
+            and (not date_to or item.date <= date_to)
+        ]
+
+    def search_media(self, _query="", date_from=None, date_to=None, **_kwargs):
+        return [
+            item
+            for item in self._media
+            if (not date_from or item.date >= date_from)
+            and (not date_to or item.date <= date_to)
+        ]
+
+    def search_notes(self, *_args, **_kwargs):
+        return []

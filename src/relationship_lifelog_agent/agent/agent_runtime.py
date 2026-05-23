@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
+import re
 import time
 from typing import Any, Iterable
 from uuid import uuid4
 
+from relationship_lifelog_agent.adapters.types import EvidenceItem
 from relationship_lifelog_agent.agent.answerability import check_answerability
+from relationship_lifelog_agent.agent.answer_composer import compose_answer
 from relationship_lifelog_agent.agent.conversation_state import ConversationState
+from relationship_lifelog_agent.agent.executor import execute_plan
+from relationship_lifelog_agent.agent.memory import build_memory
 from relationship_lifelog_agent.agent.observation_store import Observation, ObservationStore
+from relationship_lifelog_agent.agent.planner import build_plan
 from relationship_lifelog_agent.agent.profile_resolver import resolve_profile
 from relationship_lifelog_agent.agent.question_understanding import understand_question
 from relationship_lifelog_agent.agent.replanner import replan_for_observations
+from relationship_lifelog_agent.agent.router import route_question
 from relationship_lifelog_agent.agent.streaming import AgentStreamEvent
 from relationship_lifelog_agent.agent.task_graph import TaskGraph, TaskNode, private_full_task_graph
 from relationship_lifelog_agent.config import Settings
@@ -19,10 +27,12 @@ from relationship_lifelog_agent.full_context.context_budget import decide_contex
 from relationship_lifelog_agent.full_context.full_range_analyzer import analyze_single_context
 from relationship_lifelog_agent.full_context.manifest import build_full_data_manifest
 from relationship_lifelog_agent.full_context.prompt_packer import build_single_context_prompt
-from relationship_lifelog_agent.full_context.types import FullDataManifest
+from relationship_lifelog_agent.full_context.types import FullDataManifest, FullLineItem, FullMediaItem, FullNoteItem
 from relationship_lifelog_agent.llm.local_client import LocalLlmClient
+from relationship_lifelog_agent.llm.usage import LlmUsageTrace
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
 from relationship_lifelog_agent.privacy.raw_payload_policy import from_config as raw_payload_policy_from_config
+from relationship_lifelog_agent.profiles import load_profile_context
 from relationship_lifelog_agent.verification.full_answer_verifier import verify_final_answer
 
 
@@ -104,6 +114,9 @@ def run_agent(
     selected_profile_id: int | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    mode: str = "private",
+    memory: object | None = None,
+    post_conflict_window_days: int | float | None = None,
     llm_client: LocalLlmClient | None = None,
     budget: RuntimeBudget | None = None,
 ) -> AgentRun:
@@ -136,7 +149,11 @@ def run_agent(
         "selected_profile_id": selected_profile_id,
         "date_from": date_from,
         "date_to": date_to,
+        "mode": mode,
+        "memory": memory,
+        "post_conflict_window_days": post_conflict_window_days,
         "llm_client": llm_client or LocalLlmClient(config.llm),
+        "usage": LlmUsageTrace.from_settings(config.llm),
     }
     while True:
         ready = run.task_graph.ready_nodes()
@@ -176,7 +193,7 @@ def run_agent(
         date_to=context.get("date_to"),
         evidence_refs=_runtime_evidence_refs(final_run),
         computed_facts=_runtime_computed_facts(final_run),
-        mode=context["settings"].app.mode,
+        mode=context.get("mode") or context["settings"].app.mode,
     )
     answer = verification_report.corrected_answer or answer
     final_run = replace(
@@ -198,7 +215,14 @@ def run_agent(
         last_query_plan={"runtime": "private_full", "task_order": run.task_order},
         last_answerability_report=context.get("answerability", {}),
     )
-    return _finish_run(replace(final_run, answer_markdown=sanitize_answer(answer), conversation_state=updated_state), context)
+    return _finish_run(
+        replace(
+            final_run,
+            answer_markdown=sanitize_answer(answer, mode=context.get("mode", "private")),
+            conversation_state=updated_state,
+        ),
+        context,
+    )
 
 
 def stream_run_agent(
@@ -245,10 +269,42 @@ def _runtime_start_events(config: Settings) -> tuple[AgentStreamEvent, ...]:
 
 
 def _runtime_done_events(run: AgentRun) -> Iterable[AgentStreamEvent]:
+    decomposition = run.observations.latest("question_decomposition")
+    conflict_dates = run.observations.latest("conflict_candidate_dates")
+    windows = run.observations.latest("surrounding_media_windows")
+    surrounding = run.observations.latest("surrounding_media_analysis")
     manifest = run.observations.latest("manifest")
     batches = run.observations.latest("batches")
     context_mode = run.observations.latest("context_mode")
     loaded = run.observations.latest("full_data_loaded")
+    if decomposition:
+        yield _event(
+            "progress",
+            "複合質問として整理しました",
+            "Q1で候補日を探し、Q2でその日付の前日・当日・翌日の写真を確認します。",
+            status="done",
+        )
+    if conflict_dates:
+        yield _event(
+            "tool_done",
+            "喧嘩/すれ違い候補日を確認しました",
+            f"candidate_dates={', '.join(conflict_dates.data.get('dates', [])) or 'none'}",
+            status="done",
+        )
+    if windows:
+        yield _event(
+            "tool_done",
+            "前後日の写真確認範囲を作りました",
+            "surrounding_dates=" + ", ".join(windows.data.get("surrounding_dates", [])),
+            status="done",
+        )
+    if surrounding:
+        yield _event(
+            "tool_done",
+            "LINEと写真の根拠を統合しました",
+            "範囲外mediaは通常回答から除外しました。",
+            status="done",
+        )
     if loaded:
         data = loaded.data
         yield _event(
@@ -288,11 +344,34 @@ def _execute_task(run: AgentRun, node: TaskNode, context: dict[str, Any]) -> tup
     observations = run.observations
     result: dict[str, Any] = {}
     if task_id == "understand_question":
-        frame = understand_question(run.question, context["state"], settings=settings, llm_client=context["llm_client"])
+        frame = understand_question(
+            run.question,
+            context["state"],
+            settings=settings,
+            llm_client=context["llm_client"],
+            usage=context["usage"],
+        )
         context["frame"] = frame
         context["intents"] = frame.intents
-        result = {"primary_intent": frame.primary_intent}
+        result = {"primary_intent": frame.primary_intent, "intents": list(frame.intents)}
         observations = observations.add(task_id=task_id, observation_type="question_frame", summary=frame.primary_intent, data=result)
+    elif task_id == "decompose_compound_question":
+        frame = context["frame"]
+        if frame.primary_intent != "conflict_dates_with_surrounding_media":
+            return replace(run, task_graph=run.task_graph.mark_skipped(task_id, "not a compound media question"), observations=observations), context
+        result = {
+            "compound": True,
+            "q1": "喧嘩・軽いすれ違い候補日を探す",
+            "q2": "Q1の候補日を使って前日・当日・翌日の写真/メディアを確認する",
+            "dependencies": {"q2": "q1"},
+        }
+        context["question_decomposition"] = result
+        observations = observations.add(
+            task_id=task_id,
+            observation_type="question_decomposition",
+            summary="Q1 conflict date lookup -> Q2 surrounding media summary",
+            data=result,
+        )
     elif task_id == "resolve_profile":
         resolution = resolve_profile(settings, context["frame"], selected_profile_id=context.get("selected_profile_id"))
         context["profile_resolution"] = resolution
@@ -307,7 +386,13 @@ def _execute_task(run: AgentRun, node: TaskNode, context: dict[str, Any]) -> tup
         result = {"date_from": context["date_from"], "date_to": context["date_to"], "scope": settings.analysis.default_scope}
         observations = observations.add(task_id=task_id, observation_type="scope", summary="scope determined", data=result)
     elif task_id == "check_answerability":
-        report = check_answerability(context["frame"], context["profile_resolution"], settings, llm_client=context["llm_client"])
+        report = check_answerability(
+            context["frame"],
+            context["profile_resolution"],
+            settings,
+            llm_client=context["llm_client"],
+            usage=context["usage"],
+        )
         context["answerability"] = report.to_dict()
         result = {"status": report.status, "can_execute": report.can_execute}
         observation_type = "answerability" if report.can_execute else "missing_information"
@@ -319,11 +404,102 @@ def _execute_task(run: AgentRun, node: TaskNode, context: dict[str, Any]) -> tup
                 summary=report.status,
                 data=result,
             )
+    elif task_id == "find_conflict_candidate_dates":
+        if context["frame"].primary_intent != "conflict_dates_with_surrounding_media":
+            return replace(run, task_graph=run.task_graph.mark_skipped(task_id, "not needed"), observations=observations), context
+        run = replace(run, budget=run.budget.consume_tool_call())
+        compound = _run_compound_analysis(run, context)
+        context["compound_analysis"] = compound
+        conflict_dates = _extract_conflict_dates_from_result(compound["analysis_result"])
+        context["conflict_candidate_dates"] = conflict_dates
+        result = {
+            "dates": list(conflict_dates),
+            "q1_completed": True,
+            "depends_on": "question_decomposition.q1",
+            "source_refs": list(compound["source_refs"]),
+        }
+        observations = observations.add(
+            task_id=task_id,
+            observation_type="conflict_candidate_dates",
+            summary=", ".join(conflict_dates) if conflict_dates else "no conflict candidate dates",
+            data=result,
+            source_refs=compound["source_refs"],
+            confidence=float(compound["analysis_result"].confidence),
+        )
+    elif task_id == "build_surrounding_media_windows":
+        if context["frame"].primary_intent != "conflict_dates_with_surrounding_media":
+            return replace(run, task_graph=run.task_graph.mark_skipped(task_id, "not needed"), observations=observations), context
+        before_days = max(0, int(getattr(settings.relationship, "surrounding_media_days_before", 1)))
+        after_days = max(0, int(getattr(settings.relationship, "surrounding_media_days_after", 1)))
+        windows = tuple(
+            _surrounding_window(value, before_days=before_days, after_days=after_days)
+            for value in context.get("conflict_candidate_dates", ())
+        )
+        surrounding_dates = tuple(dict.fromkeys(day for start, end in windows for day in _days_between(start, end)))
+        context["surrounding_windows"] = windows
+        context["surrounding_dates"] = surrounding_dates
+        result = {
+            "before_days": before_days,
+            "after_days": after_days,
+            "windows": [{"date_from": start, "date_to": end} for start, end in windows],
+            "surrounding_dates": list(surrounding_dates),
+            "q2_depends_on_q1": True,
+        }
+        observations = observations.add(
+            task_id=task_id,
+            observation_type="surrounding_media_windows",
+            summary=", ".join(surrounding_dates) if surrounding_dates else "no surrounding windows",
+            data=result,
+        )
+    elif task_id == "analyze_surrounding_media":
+        if context["frame"].primary_intent != "conflict_dates_with_surrounding_media":
+            return replace(run, task_graph=run.task_graph.mark_skipped(task_id, "not needed"), observations=observations), context
+        compound = context.get("compound_analysis") or _run_compound_analysis(run, context)
+        context["compound_analysis"] = compound
+        media_day_lines = _media_day_lines(compound["analysis_result"])
+        context["media_day_lines"] = media_day_lines
+        result = {
+            "q2_completed": True,
+            "depends_on": "find_conflict_candidate_dates",
+            "surrounding_dates": list(context.get("surrounding_dates", ())),
+            "media_day_lines": list(media_day_lines),
+            "summary": compound["analysis_result"].summary,
+            "aggregate": dict(compound["analysis_result"].aggregate),
+            "examples": list(compound["analysis_result"].examples),
+            "cautions": list(compound["analysis_result"].cautions),
+            "confidence": compound["analysis_result"].confidence,
+            "evidence_strength": compound["analysis_result"].evidence_strength,
+            "source_refs": list(compound["source_refs"]),
+            "answer_excerpt": _shorten(compound["answer_markdown"], 480),
+            "llm_usage": context["usage"].to_dict(),
+        }
+        observations = observations.add(
+            task_id=task_id,
+            observation_type="surrounding_media_analysis",
+            summary=f"media days checked: {len(context.get('surrounding_dates', ())) }",
+            data=result,
+            source_refs=compound["source_refs"],
+            confidence=float(compound["analysis_result"].confidence),
+        )
     elif task_id == "load_full_data":
         run = replace(run, budget=run.budget.consume_tool_call())
-        context["full_data"] = {"line_items": (), "note_items": (), "media_items": (), "face_items": (), "location_items": ()}
-        result = {"line_count": 0, "note_count": 0, "media_count": 0, "face_count": 0, "location_count": 0}
-        observations = observations.add(task_id=task_id, observation_type="full_data_loaded", summary="empty full data placeholder", data=result)
+        full_data = _load_full_data_for_runtime(context)
+        context["full_data"] = full_data
+        result = {
+            "line_count": len(full_data["line_items"]),
+            "note_count": len(full_data["note_items"]),
+            "media_count": len(full_data["media_items"]),
+            "face_count": len(full_data["face_items"]),
+            "location_count": len(full_data["location_items"]),
+            "source_refs": list(_source_refs_from_full_data(full_data)),
+        }
+        observations = observations.add(
+            task_id=task_id,
+            observation_type="full_data_loaded",
+            summary="full data loaded from read-only adapters",
+            data=result,
+            source_refs=_source_refs_from_full_data(full_data),
+        )
     elif task_id == "build_manifest":
         data = context["full_data"]
         manifest = build_full_data_manifest(
@@ -409,6 +585,212 @@ def _execute_task(run: AgentRun, node: TaskNode, context: dict[str, Any]) -> tup
     return replace(run, task_graph=graph, observations=observations), context
 
 
+def _run_compound_analysis(run: AgentRun, context: dict[str, Any]) -> dict[str, Any]:
+    settings: Settings = context["settings"]
+    route = route_question(run.question)
+    plan = build_plan(route, date_from=context.get("date_from"), date_to=context.get("date_to"))
+    memory = context.get("memory") or build_memory(settings)
+    context["memory"] = memory
+    profile = load_profile_context(settings, context.get("profile_id"))
+    usage: LlmUsageTrace = context["usage"]
+    result = execute_plan(
+        plan,
+        memory,
+        mode=context.get("mode", "private"),
+        profile=profile,
+        settings=settings,
+        date_from=context.get("date_from"),
+        date_to=context.get("date_to"),
+        post_conflict_window_days=context.get("post_conflict_window_days"),
+        llm_client=context.get("llm_client"),
+        usage=usage,
+    )
+    person_names = [profile.profile_name] if profile else None
+    answer = compose_answer(result, mode=context.get("mode", "private"), person_names=person_names)
+    source_refs = tuple(dict.fromkeys(_source_refs_from_evidence(result.evidence) or (f"runtime:compound:{run.run_id}",)))
+    return {
+        "analysis_result": result,
+        "answer_markdown": answer,
+        "source_refs": source_refs,
+    }
+
+
+def _load_full_data_for_runtime(context: dict[str, Any]) -> dict[str, tuple[Any, ...]]:
+    settings: Settings = context["settings"]
+    memory = context.get("memory") or build_memory(settings)
+    context["memory"] = memory
+    mode = context.get("mode", "private")
+    date_from = context.get("date_from")
+    date_to = context.get("date_to")
+    if not date_from and not date_to and context.get("surrounding_dates"):
+        dates = tuple(str(value) for value in context["surrounding_dates"])
+        date_from, date_to = min(dates), max(dates)
+    limit = max(1, int(settings.analysis.full_scan.max_items_per_batch))
+    personal = getattr(memory, "personal", memory)
+    notes = getattr(memory, "notes", memory)
+    line_items = _safe_adapter_call(personal, "search_line", "", date_from=date_from, date_to=date_to, limit=limit, mode=mode)
+    note_items = _safe_adapter_call(notes, "search_notes", "", date_from=date_from, date_to=date_to, limit=limit, mode=mode)
+    media_items = _safe_adapter_call(personal, "search_media", "", date_from=date_from, date_to=date_to, limit=limit, mode=mode)
+    return {
+        "line_items": tuple(_full_line_item(item) for item in line_items if _full_line_item(item) is not None),
+        "note_items": tuple(_full_note_item(item) for item in note_items if _full_note_item(item) is not None),
+        "media_items": tuple(_full_media_item(item) for item in media_items if _full_media_item(item) is not None),
+        "face_items": (),
+        "location_items": (),
+    }
+
+
+def _safe_adapter_call(adapter: object, method_name: str, *args: Any, **kwargs: Any) -> list[Any]:
+    method = getattr(adapter, method_name, None)
+    if not callable(method):
+        return []
+    try:
+        result = method(*args, **kwargs)
+    except TypeError:
+        trimmed = {key: value for key, value in kwargs.items() if key != "mode"}
+        try:
+            result = method(*args, **trimmed)
+        except Exception:
+            return []
+    except Exception:
+        return []
+    return list(result or [])
+
+
+def _full_line_item(item: object) -> FullLineItem | None:
+    source_ref = _item_source_ref(item)
+    source_id = _item_attr(item, "source_id")
+    if not source_ref or not source_id:
+        return None
+    return FullLineItem(
+        source_ref=source_ref,
+        source_id=source_id,
+        conversation_id=_item_attr(item, "conversation_id"),
+        timestamp=_item_attr(item, "date"),
+        speaker_id=_item_attr(item, "speaker_id"),
+        speaker_label=None,
+        raw_text=_shorten(_item_text(item), 2000) or None,
+        raw_metadata={"summary": _shorten(_item_attr(item, "summary"), 240)},
+    )
+
+
+def _full_note_item(item: object) -> FullNoteItem | None:
+    source_ref = _item_source_ref(item)
+    source_id = _item_attr(item, "source_id")
+    if not source_ref or not source_id:
+        return None
+    return FullNoteItem(
+        source_ref=source_ref,
+        source_id=source_id,
+        note_id=_item_attr(item, "note_id") or source_id,
+        created_at=_item_attr(item, "date"),
+        raw_body=_shorten(_item_text(item), 4000) or None,
+        tags=tuple(str(tag) for tag in getattr(item, "metadata", {}).get("tags", ()) if tag),
+        raw_metadata={"summary": _shorten(_item_attr(item, "summary"), 240)},
+    )
+
+
+def _full_media_item(item: object) -> FullMediaItem | None:
+    source_ref = _item_source_ref(item)
+    source_id = _item_attr(item, "source_id")
+    if not source_ref or not source_id:
+        return None
+    return FullMediaItem(
+        source_ref=source_ref,
+        source_id=source_id,
+        media_id=_item_attr(item, "media_id") or source_id,
+        captured_at=_item_attr(item, "date"),
+        place_label=_item_attr(item, "place_id"),
+        vlm_caption=_shorten(_item_attr(item, "summary"), 1000) or None,
+        raw_metadata={"media_type": _item_attr(item, "media_type") or "photo"},
+    )
+
+
+def _source_refs_from_full_data(full_data: dict[str, tuple[Any, ...]]) -> tuple[str, ...]:
+    refs: list[str] = []
+    for items in full_data.values():
+        refs.extend(str(getattr(item, "source_ref")) for item in items if getattr(item, "source_ref", None))
+    return tuple(dict.fromkeys(refs))
+
+
+def _source_refs_from_evidence(evidence_items: Iterable[EvidenceItem]) -> tuple[str, ...]:
+    refs: list[str] = []
+    for item in evidence_items:
+        if item.source_pointer:
+            refs.append(item.source_pointer)
+        else:
+            refs.append(f"{item.source_type}:{item.source_id}")
+    return tuple(dict.fromkeys(refs))
+
+
+def _extract_conflict_dates_from_result(result: Any) -> tuple[str, ...]:
+    aggregate = getattr(result, "aggregate", {}) or {}
+    observed = str(aggregate.get("observed_dates") or "")
+    dates = re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", observed)
+    if dates:
+        return tuple(dict.fromkeys(dates))
+    examples = "\n".join(str(item) for item in getattr(result, "examples", ()))
+    return tuple(dict.fromkeys(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", examples)))
+
+
+def _media_day_lines(result: Any) -> tuple[str, ...]:
+    lines: list[str] = []
+    in_media_section = False
+    for value in getattr(result, "examples", ()):
+        text = str(value)
+        if text.startswith("写真から見た前後の日"):
+            in_media_section = True
+            continue
+        if in_media_section and re.match(r"^20\d{2}-\d{2}-\d{2}:", text):
+            lines.append(text)
+    return tuple(lines)
+
+
+def _surrounding_window(value: str, *, before_days: int, after_days: int) -> tuple[str, str]:
+    current = date.fromisoformat(value)
+    return (current - timedelta(days=before_days)).isoformat(), (current + timedelta(days=after_days)).isoformat()
+
+
+def _days_between(start: str, end: str) -> tuple[str, ...]:
+    current = date.fromisoformat(start)
+    last = date.fromisoformat(end)
+    values: list[str] = []
+    while current <= last:
+        values.append(current.isoformat())
+        current += timedelta(days=1)
+    return tuple(values)
+
+
+def _item_source_ref(item: object) -> str | None:
+    pointer = getattr(item, "source_pointer", None)
+    if pointer:
+        return str(pointer)
+    source_type = getattr(item, "source_type", None)
+    source_id = getattr(item, "source_id", None)
+    if source_type and source_id:
+        return f"{source_type}:{source_id}"
+    return None
+
+
+def _item_attr(item: object, name: str) -> str | None:
+    value = getattr(item, name, None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _item_text(item: object) -> str:
+    return _item_attr(item, "excerpt") or _item_attr(item, "summary") or ""
+
+
+def _shorten(value: object, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _finish_run(run: AgentRun, context: dict[str, Any]) -> AgentRun:
     verification = run.observations.latest("final_answer_verification")
     debug_info = {
@@ -429,6 +811,7 @@ def _finish_run(run: AgentRun, context: dict[str, Any]) -> AgentRun:
         "observations": run.observations.to_debug_list(),
         "answerability": context.get("answerability", {}),
         "verification": verification.data if verification else {},
+        "llm_usage": context.get("usage").to_dict() if context.get("usage") else {},
     }
     return replace(run, debug_info=debug_info)
 
@@ -463,6 +846,9 @@ def _runtime_computed_facts(run: AgentRun) -> dict[str, int]:
 
 
 def _compose_runtime_answer(run: AgentRun) -> str:
+    compound = run.observations.latest("surrounding_media_analysis")
+    if compound is not None:
+        return _compose_compound_runtime_answer(run, compound)
     manifest = run.observations.latest("manifest")
     context_mode = run.observations.latest("context_mode")
     analysis = run.observations.latest("single_context_analysis") or run.observations.latest("synthesis")
@@ -505,6 +891,103 @@ def _compose_runtime_answer(run: AgentRun) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _compose_compound_runtime_answer(run: AgentRun, compound: Observation) -> str:
+    data = compound.data
+    aggregate = data.get("aggregate") if isinstance(data.get("aggregate"), dict) else {}
+    source_refs = tuple(data.get("source_refs") or compound.source_refs or ())
+    conflict_dates = _date_values_from_text(str(aggregate.get("observed_dates") or ""))
+    if not conflict_dates:
+        conflict_dates = tuple(str(value) for value in data.get("surrounding_dates", ()) if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", str(value)))
+    media_day_lines = tuple(str(line) for line in data.get("media_day_lines", ()) if _date_values_from_text(str(line)))
+    q1 = "喧嘩・軽いすれ違い候補日を探す"
+    q2 = "Q1の日付を使って、前日・当日・翌日の写真/メディアだけを確認する"
+    refs_markdown = _source_refs_markdown(source_refs)
+    process_lines = [
+        "- understand_question -> decompose_compound_question",
+        "- find_conflict_candidate_dates: Q1を先に実行",
+        "- build_surrounding_media_windows: Q1の日付からexact surrounding datesを作成",
+        "- analyze_surrounding_media: 範囲外mediaを除外して日別summaryを作成",
+        "- verify_answer: source_refと安全表現を確認",
+    ]
+    usage = _runtime_llm_usage(run)
+    lines = [
+        "要約:",
+        str(data.get("summary") or "喧嘩・軽いすれ違い候補日と、その前後日の写真/メディアを分けて確認しました。"),
+        "",
+        "質問分解:",
+        f"- Q1: {q1}",
+        f"- Q2: {q2}",
+        "- 依存関係: Q2はQ1で見つかった候補日だけを使います。",
+        "",
+        "喧嘩/すれ違い候補日:",
+        f"- conflict_candidates: {aggregate.get('conflict_candidates', 0)}",
+        f"- minor_misunderstanding_candidates: {aggregate.get('minor_misunderstanding_candidates', 0)}",
+        f"- observed_dates: {', '.join(conflict_dates) if conflict_dates else '候補日は見つかっていません'}",
+        "",
+        "LINE/メモ根拠:",
+        refs_markdown,
+        "",
+        "前日/当日/翌日の写真分析:",
+        _media_days_markdown(media_day_lines, tuple(str(value) for value in data.get("surrounding_dates", ()))),
+        "",
+        "不確実性:",
+        f"- confidence: {float(data.get('confidence', 0.5)):.2f}",
+        f"- evidence_strength: {float(data.get('evidence_strength', 0.5)):.2f}",
+        "- 写真だけでは、仲直り・同行者・相手の気持ちは断定していません。",
+        "",
+        "注意:",
+        "<details>\n<summary>注意を表示</summary>\n\n"
+        + "\n".join(f"- {caution}" for caution in (data.get("cautions") or ["喧嘩は候補として扱います。"])[:6])
+        + "\n\n</details>",
+        "",
+        "実行プロセス:",
+        "<details>\n<summary>処理プロセスを表示</summary>\n\n" + "\n".join(process_lines) + "\n\n</details>",
+        "",
+        "LLM利用状況:",
+        f"- llm_call_count: {usage.get('llm_call_count', 0)}",
+        f"- batch_count: {_runtime_batch_count(run)}",
+        f"- source_coverage: {len(source_refs)} source_ref(s)",
+    ]
+    return "\n".join(lines)
+
+
+def _source_refs_markdown(source_refs: tuple[str, ...]) -> str:
+    if not source_refs:
+        return "- source_ref: なし（このrunでは表示可能な根拠参照がありません）"
+    return "\n".join(f"- source_ref: {ref}" for ref in source_refs[:8])
+
+
+def _media_days_markdown(media_day_lines: tuple[str, ...], surrounding_dates: tuple[str, ...]) -> str:
+    by_day = {line.split(":", 1)[0]: line.split(":", 1)[1].strip() for line in media_day_lines if ":" in line}
+    days = tuple(dict.fromkeys(day for day in surrounding_dates if re.fullmatch(r"20\d{2}-\d{2}-\d{2}", day)))
+    if not days:
+        days = tuple(dict.fromkeys(_date_values_from_text("\n".join(media_day_lines))))
+    if not days:
+        return "- 対象日の前後日を作れなかったため、写真summaryはありません。"
+    return "\n".join(f"- {day}: {by_day.get(day, '写真/メディア候補は見つかっていません。')}" for day in days)
+
+
+def _runtime_llm_usage(run: AgentRun) -> dict[str, Any]:
+    for observation in run.observations.observations:
+        usage = observation.data.get("llm_usage")
+        if isinstance(usage, dict):
+            return usage
+    # Fall back to budget-visible calls and analysis observations.
+    return {"llm_call_count": run.budget.used_llm_calls}
+
+
+def _runtime_batch_count(run: AgentRun) -> int:
+    batches = run.observations.latest("batches")
+    if not batches:
+        return 0
+    value = batches.data.get("batch_count", 0)
+    return int(value) if isinstance(value, int) else 0
+
+
+def _date_values_from_text(text: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(re.findall(r"\b20\d{2}-\d{2}-\d{2}\b", text)))
 
 
 def _missing_information_answer(run: AgentRun, reason: str) -> str:

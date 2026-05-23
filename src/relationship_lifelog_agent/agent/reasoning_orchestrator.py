@@ -58,6 +58,9 @@ def stream_answer(
             selected_profile_id=selected_profile_id,
             date_from=date_from,
             date_to=date_to,
+            mode=mode,
+            memory=memory,
+            post_conflict_window_days=post_conflict_window_days,
             llm_client=llm_client,
             budget=runtime_budget,
         )
@@ -226,6 +229,9 @@ def answer_with_reasoning(
             selected_profile_id=selected_profile_id,
             date_from=date_from,
             date_to=date_to,
+            mode=mode,
+            memory=memory,
+            post_conflict_window_days=post_conflict_window_days,
             llm_client=llm_client,
             budget=runtime_budget,
         )
