@@ -163,6 +163,14 @@ def _profile_main(argv: list[str]) -> None:
         if args.profile_command == "list":
             _print_profiles(repo.list_profiles())
         elif args.profile_command == "create":
+            duplicates = repo.find_active_duplicate_profiles(
+                profile_name=args.profile_name,
+                relationship_label=args.relationship_label,
+                visibility=args.visibility,
+            )
+            if duplicates:
+                ids = ", ".join(str(item["id"]) for item in duplicates)
+                print(f"warning: duplicate active profile candidate exists: id={ids}")
             profile_id = repo.create_profile(
                 profile_name=args.profile_name,
                 person_source_id=args.person_source_id,
@@ -193,6 +201,11 @@ def _profile_main(argv: list[str]) -> None:
             if changed == 0:
                 raise SystemExit(f"profile not found or unchanged: {profile_id}")
             print(f"updated profile id={profile_id}")
+        elif args.profile_command == "deactivate":
+            changed = repo.update_profile(args.id, visibility="hidden")
+            if changed == 0:
+                raise SystemExit(f"profile not found or unchanged: {args.id}")
+            print(f"deactivated profile id={args.id}")
         else:
             parser.error("unknown profile command")
     except ValueError as exc:
@@ -419,6 +432,9 @@ def _build_profile_parser() -> argparse.ArgumentParser:
     update.add_argument("--valid-to", default=None)
     update.add_argument("--visibility", choices=("private", "hidden"), default=None)
     update.add_argument("--notes", default=None)
+
+    deactivate = profile_sub.add_parser("deactivate", help="Hide a duplicate or obsolete manual profile.")
+    deactivate.add_argument("--id", required=True, type=int)
     return parser
 
 

@@ -127,6 +127,8 @@ def execute_plan(
     results = _run_adapter_calls(plan, memory, mode=mode, profile=profile)
     results["_backend"] = [_backend(memory)]
     results["_window_days"] = [_resolve_window_days(settings, post_conflict_window_days)]
+    if profile is not None:
+        results["_profile_context"] = [profile]
     if settings is not None and profile is not None:
         results["relationship_db.events"] = _load_saved_relationship_events(
             settings,
@@ -201,7 +203,13 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
     events = _relationship_event_candidates(results)
     counts = Counter(event.event_type for event in events)
     review_aggregate = _review_aggregate(events, results)
-    evidence = _evidence_items([*events, *_adapter_items(results, "personal.search_line"), *_adapter_items(results, "notes.search_notes")])
+    line_items = _adapter_items(results, "personal.search_line")
+    note_items, note_warnings = _filtered_relationship_notes(
+        _adapter_items(results, "notes.search_notes"),
+        events=events,
+        profile=_profile_from_results_context(results),
+    )
+    evidence = _evidence_items([*line_items, *note_items, *_event_evidence_for_display(events)])
     examples = [
         f"{event.date}: {_severity_label(event.severity)} - {event.summary}"
         for event in events[:4]
@@ -218,10 +226,11 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
         )
     backend_label = "mock データ上" if _backend_from_results(results) == "mock" else "上流read-only adapter"
     review_phrase = "人間レビュー済みを優先して集計しています。" if review_aggregate["人間確認済み件数"] else ""
+    summary_counts = _conflict_summary_counts(counts)
     return AnalysisResult(
         intent="conflict_frequency",
         summary=(
-            f"{backend_label}では喧嘩候補が {len(events)} 件あります。"
+            f"{backend_label}では{summary_counts}。"
             f"これは確定ではなく、未確認のものは人間確認前の候補です。{review_phrase}"
         ),
         aggregate={
@@ -238,6 +247,7 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
         cautions=[
             "喧嘩は候補として扱います。相手の気持ちや関係状態は断定できません。",
             "返信遅延などの弱い信号だけでは喧嘩とは扱いません。",
+            *note_warnings,
             *_review_cautions(events, results),
         ],
     )
@@ -245,7 +255,12 @@ def _conflict_frequency(results: dict[str, list[Any]]) -> AnalysisResult:
 
 def _conflict_timeline(results: dict[str, list[Any]]) -> AnalysisResult:
     events = _rank_events(_relationship_event_candidates(results))
-    evidence = _evidence_items([*events, *_adapter_items(results, "personal.search_line"), *_adapter_items(results, "notes.search_notes")])
+    note_items, note_warnings = _filtered_relationship_notes(
+        _adapter_items(results, "notes.search_notes"),
+        events=events,
+        profile=_profile_from_results_context(results),
+    )
+    evidence = _evidence_items([*_adapter_items(results, "personal.search_line"), *note_items, *_event_evidence_for_display(events)])
     return AnalysisResult(
         intent="conflict_timeline",
         summary="喧嘩候補と軽いすれ違い候補を時系列で整理しました。",
@@ -260,6 +275,7 @@ def _conflict_timeline(results: dict[str, list[Any]]) -> AnalysisResult:
         cautions=[
             "時系列は mock データによる候補であり、実データの確定事実ではありません。",
             "相手の内面は記録から断定しません。",
+            *note_warnings,
             *_review_cautions(events, results),
         ],
     )
@@ -604,6 +620,13 @@ def _with_profile_context(result: AnalysisResult, profile: ProfileContext | None
     return replace(result, aggregate=aggregate, cautions=cautions)
 
 
+def _profile_from_results_context(results: dict[str, list[Any]]) -> ProfileContext | None:
+    values = results.get("_profile_context", [])
+    if values and isinstance(values[0], ProfileContext):
+        return values[0]
+    return None
+
+
 def _profile_warnings_for_plan(plan: QueryPlan, profile: ProfileContext | None) -> list[str]:
     warnings: list[str] = []
     if profile is None:
@@ -617,6 +640,172 @@ def _profile_warnings_for_plan(plan: QueryPlan, profile: ProfileContext | None) 
             "返信間隔系の分析には self_line_speaker_source_id または self_line_speaker_group_source_id の手動設定が必要です。"
         )
     return warnings
+
+
+def _conflict_summary_counts(counts: Counter[str]) -> str:
+    conflict_count = int(counts["conflict"])
+    minor_count = int(counts["minor_misunderstanding"])
+    if conflict_count == 0 and minor_count > 0:
+        return f"中程度以上の喧嘩候補は0件、軽いすれ違い候補は{minor_count}件あります"
+    return f"中程度以上の喧嘩候補は{conflict_count}件、軽いすれ違い候補は{minor_count}件あります"
+
+
+def _event_evidence_for_display(events: list[EventEvidence]) -> list[EventEvidence]:
+    displayable: list[EventEvidence] = []
+    for event in events:
+        if event.metadata.get("derived_from"):
+            continue
+        displayable.append(event)
+    return displayable
+
+
+def _filtered_relationship_notes(
+    items: list[Any],
+    *,
+    events: list[EventEvidence],
+    profile: ProfileContext | None,
+    window_days: int = 14,
+) -> tuple[list[Any], list[str]]:
+    event_dates = [_safe_iso_date(event.date) for event in events]
+    event_dates = [item for item in event_dates if item is not None]
+    accepted: list[Any] = []
+    excluded_undated = 0
+    excluded_low_score = 0
+    for item in items:
+        if not isinstance(item, (NoteEvidence, ThoughtEvidence)):
+            continue
+        scored = _score_relationship_note(item, event_dates=event_dates, profile=profile, window_days=window_days)
+        if scored is None:
+            if _is_unknown_or_sentinel_date(item.date):
+                excluded_undated += 1
+            else:
+                excluded_low_score += 1
+            continue
+        accepted.append(scored)
+    warnings: list[str] = []
+    if excluded_undated:
+        warnings.append("日付不明またはparse失敗のnote候補は、通常の根拠から除外しました。")
+    if excluded_low_score:
+        warnings.append("関係性・日付・source relevanceが低いnote候補は、通常の根拠から除外しました。")
+    return accepted, warnings
+
+
+def _score_relationship_note(
+    item: NoteEvidence | ThoughtEvidence,
+    *,
+    event_dates: list[date],
+    profile: ProfileContext | None,
+    window_days: int,
+) -> NoteEvidence | ThoughtEvidence | None:
+    item_date = _safe_iso_date(item.date)
+    if item_date is None or _is_unknown_or_sentinel_date(item.date):
+        return None
+    date_relevance = _date_relevance(item_date, event_dates, window_days=window_days)
+    if date_relevance <= 0:
+        return None
+    relationship_relevance = _relationship_relevance(item, profile=profile, date_relevance=date_relevance)
+    source_relevance = _source_relevance(item)
+    final_score = (relationship_relevance * 0.45) + (date_relevance * 0.35) + (source_relevance * 0.20)
+    if final_score < 0.5:
+        return None
+    metadata = {
+        **item.metadata,
+        "relationship_relevance": round(relationship_relevance, 3),
+        "date_relevance": round(date_relevance, 3),
+        "source_relevance": round(source_relevance, 3),
+        "final_evidence_score": round(final_score, 3),
+    }
+    return replace(
+        item,
+        role="supporting",
+        evidence_strength=max(item.evidence_strength, min(final_score, 0.85)),
+        metadata=metadata,
+    )
+
+
+def _date_relevance(item_date: date, event_dates: list[date], *, window_days: int) -> float:
+    if not event_dates:
+        return 0.0
+    nearest = min(abs((item_date - event_date).days) for event_date in event_dates)
+    if nearest == 0:
+        return 1.0
+    if nearest <= 3:
+        return 0.85
+    if nearest <= window_days:
+        return 0.65
+    return 0.0
+
+
+def _relationship_relevance(
+    item: NoteEvidence | ThoughtEvidence,
+    *,
+    profile: ProfileContext | None,
+    date_relevance: float,
+) -> float:
+    text = _note_search_text(item)
+    if _has_unrelated_note_terms(text):
+        return 0.1
+    if profile and profile.profile_name and profile.profile_name in text:
+        return 0.95
+    if _text_has_any(text, ("relationship", "relationship_reflection", "関係", "恋愛", "振り返り", "喧嘩", "すれ違い")):
+        return 0.8
+    if date_relevance > 0 and _text_has_any(text, ("反省", "謝罪", "不安", "後悔", "感謝", "気持ち")):
+        return 0.65
+    return 0.25
+
+
+def _source_relevance(item: NoteEvidence | ThoughtEvidence) -> float:
+    text = _note_search_text(item)
+    if _has_unrelated_note_terms(text):
+        return 0.1
+    if _text_has_any(text, ("relationship_reflection", "regret", "anxiety", "gratitude", "関係", "反省", "不安", "後悔", "感謝")):
+        return 0.75
+    return 0.45
+
+
+def _note_search_text(item: NoteEvidence | ThoughtEvidence) -> str:
+    metadata_values = " ".join(str(value) for value in item.metadata.values())
+    specific = ""
+    if isinstance(item, NoteEvidence):
+        specific = f"{item.category} {item.note_id or ''}"
+    elif isinstance(item, ThoughtEvidence):
+        specific = f"{item.thought_type} {item.thought_id or ''}"
+    return f"{item.summary} {item.excerpt or ''} {specific} {metadata_values}"
+
+
+def _has_unrelated_note_terms(text: str) -> bool:
+    return _text_has_any(
+        text,
+        (
+            "GEN ROCK",
+            "WS",
+            "ワークショップ",
+            "履修",
+            "財団",
+            "ES",
+            "OMG",
+            "飲み会",
+            "研究",
+            "技術",
+            "コード",
+            "論文",
+            "学業",
+        ),
+    )
+
+
+def _safe_iso_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_unknown_or_sentinel_date(value: str) -> bool:
+    parsed = _safe_iso_date(value)
+    if parsed is None:
+        return True
+    return parsed <= date(1970, 1, 1)
 
 
 def _review_targets_from_result(
@@ -773,6 +962,7 @@ def _adapter_items(results: dict[str, list[Any]], key: str) -> list[Any]:
 def _evidence_items(items: list[Any]) -> list[EvidenceItem]:
     evidence: list[EvidenceItem] = []
     seen: set[tuple[str, str]] = set()
+    seen_content: set[tuple[str, str]] = set()
     for item in items:
         converted = _to_evidence_item(item)
         if converted is None:
@@ -780,7 +970,11 @@ def _evidence_items(items: list[Any]) -> list[EvidenceItem]:
         key = (converted.source_type, converted.source_id)
         if key in seen:
             continue
+        content_key = (converted.date, _normalize_evidence_summary(converted.summary))
+        if content_key in seen_content:
+            continue
         seen.add(key)
+        seen_content.add(content_key)
         evidence.append(converted)
     return evidence
 
@@ -791,6 +985,10 @@ def _to_evidence_item(item: Any) -> EvidenceItem | None:
     if isinstance(item, AdapterEvidence):
         return item.as_evidence_item()
     return None
+
+
+def _normalize_evidence_summary(value: str) -> str:
+    return " ".join(str(value).split())[:160]
 
 
 def _days_after_latest_conflict(activity_date: str, conflicts: list[EventEvidence]) -> int | None:

@@ -6,12 +6,18 @@ from relationship_lifelog_agent.privacy.guard import sanitize_answer
 from relationship_lifelog_agent.privacy.redaction import redact_evidence_for_mode
 
 
+MAX_DISPLAY_EVIDENCE_ITEMS = 5
+
+
 def compose_answer(
     result: AnalysisResult,
     mode: str = "private",
     person_names: list[str] | None = None,
 ) -> str:
-    evidence = [redact_evidence_for_mode(item, mode=mode, person_names=person_names) for item in result.evidence[:8]]
+    evidence = [
+        redact_evidence_for_mode(item, mode=mode, person_names=person_names)
+        for item in result.evidence[:MAX_DISPLAY_EVIDENCE_ITEMS]
+    ]
     parts = [
         "要約:\n" + result.summary,
         "集計:\n" + _format_aggregate(result.aggregate),

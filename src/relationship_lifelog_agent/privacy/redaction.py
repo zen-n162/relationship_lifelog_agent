@@ -39,7 +39,7 @@ def redact_evidence_for_mode(
     person_names: list[str] | None = None,
 ) -> EvidenceItem:
     if mode != "public":
-        return item
+        return replace(item, excerpt=_limit_private_excerpt(item))
     summary = redact_public_text(item.summary, person_names=person_names)
     return replace(item, summary=summary, excerpt=None)
 
@@ -52,3 +52,13 @@ def _redact_person_names(text: str, person_names: list[str]) -> str:
         label = PUBLIC_ANONYMOUS_PERSON_LABELS[min(index, len(PUBLIC_ANONYMOUS_PERSON_LABELS) - 1)]
         redacted = redacted.replace(name, label)
     return redacted
+
+
+def _limit_private_excerpt(item: EvidenceItem) -> str | None:
+    if not item.excerpt:
+        return None
+    max_chars = 80 if item.source_type == "line_message" else 120
+    text = " ".join(str(item.excerpt).split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}..."

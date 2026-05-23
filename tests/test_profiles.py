@@ -112,6 +112,33 @@ def test_profile_cli_create_list_show_update(tmp_path, capsys) -> None:
     assert repo.get_profile(1)["self_person_source_id"] == "plr:person:self-updated"
 
 
+def test_profile_cli_warns_on_duplicate_and_can_deactivate(tmp_path, capsys) -> None:
+    config_path = _write_config(tmp_path)
+    base_args = [
+        "--config",
+        str(config_path),
+        "profile",
+        "create",
+        "--profile-name",
+        "Aさん",
+        "--relationship-label",
+        "partner",
+    ]
+
+    cli_main(base_args)
+    capsys.readouterr()
+    cli_main(base_args)
+    duplicate_output = capsys.readouterr().out
+
+    assert "warning: duplicate active profile candidate exists" in duplicate_output
+    assert "created profile id=2" in duplicate_output
+
+    cli_main(["--config", str(config_path), "profile", "deactivate", "--id", "2"])
+    assert "deactivated profile id=2" in capsys.readouterr().out
+    repo = RelationshipRepository(tmp_path / "relationship.sqlite")
+    assert repo.get_profile(2)["visibility"] == "hidden"
+
+
 def test_profile_missing_returns_safe_guidance(tmp_path) -> None:
     settings = Settings(paths=PathSettings(relationship_db=str(tmp_path / "relationship.sqlite")))
 
@@ -158,6 +185,30 @@ def test_profile_configured_named_question_does_not_stop_at_setup_guidance(tmp_p
 
     assert "relationship profile が手動設定されていない" not in answer
     assert "profile_configured: True" in answer
+
+
+def test_default_profile_id_wins_when_profile_name_is_duplicated(tmp_path) -> None:
+    db_path = tmp_path / "relationship.sqlite"
+    repo = RelationshipRepository(db_path)
+    repo.create_profile(
+        "いおり",
+        relationship_label="partner",
+        person_source_id="plr:person:target",
+        line_speaker_source_id="plr:line_speaker:target",
+        self_person_source_id="plr:person:self",
+        self_line_speaker_source_id="plr:line_speaker:self",
+    )
+    repo.create_profile("いおり", relationship_label="partner")
+    settings = Settings(
+        paths=PathSettings(relationship_db=str(db_path)),
+        relationship=RelationshipSettings(default_profile_id=1),
+    )
+
+    answer = answer_question("いおりとの喧嘩はどれくらいしている？", settings=settings)
+
+    assert "profile_id: 1" in answer
+    assert "profile_id: 2" not in answer
+    assert "relationship profile が手動設定されていない" not in answer
 
 
 def test_reply_delay_warns_when_self_speaker_is_missing(tmp_path) -> None:

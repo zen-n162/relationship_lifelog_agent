@@ -334,6 +334,7 @@
           <p>
             件数、日付、候補の集計はPythonで計算します。喧嘩や仲直りを断定せず、
             事実と推定を分けて、根拠・信頼度・注意を含む回答を返します。
+            根拠表示はLINE primary evidenceを優先し、日付不明・低関連・無関係なnote候補は通常回答から除外します。
           </p>
         </article>
         <article class="card">
@@ -428,7 +429,7 @@
           <span class="num">4</span>
           <div>
             <strong>Analytics / Answer composer</strong>
-            <p>件数や日付を決定的に集計し、要約、集計、具体例、根拠、信頼度、注意を含む日本語回答を作ります。</p>
+            <p>件数や日付を決定的に集計し、要約、集計、具体例、根拠、信頼度、注意を含む日本語回答を作ります。通常回答の根拠は最大5件に制限し、private modeでもexcerptを短くします。</p>
           </div>
         </div>
         <div class="flow-step">
@@ -473,7 +474,7 @@
             <tr>
               <td><code>analytics/</code></td>
               <td>喧嘩候補、外出候補、月次レビューなどを集計します。</td>
-              <td>Pythonで件数・日付・根拠強度を扱い、dry-run候補抽出reportを生成します。</td>
+              <td>Pythonで件数・日付・根拠強度を扱い、dry-run候補抽出reportを生成します。喧嘩候補のsupporting noteは日付近傍、relationship relevance、source relevanceで絞ります。</td>
             </tr>
             <tr>
               <td><code>db/</code></td>
@@ -530,7 +531,7 @@
       <ul>
         <li>既存の<code>personal_lifelog_rag</code>と<code>notes_lifelog_rag</code>は上流ツールとして扱い、破壊的に編集しません。</li>
         <li>relationship DBには、関係固有の派生情報とsource pointerを保存し、上流のraw private dataを丸ごとコピーしません。</li>
-        <li><code>relationship_profiles</code>は手動設定のみを保存し、<code>label_source</code>は<code>user_manual</code>固定です。対象側と自分側のperson / LINE speaker / speaker group source IDを保存できます。</li>
+        <li><code>relationship_profiles</code>は手動設定のみを保存し、<code>label_source</code>は<code>user_manual</code>固定です。対象側と自分側のperson / LINE speaker / speaker group source IDを保存できます。同名profileがある場合でも<code>default_profile_id</code>を優先し、不要な重複profileは明示CLIでhiddenにできます。</li>
         <li>外部API、cloud upload、モデル自動ダウンロードは使いません。</li>
         <li>Gradioは<code>127.0.0.1</code>で起動し、<code>share=True</code>は禁止です。</li>
         <li>public modeでは実人物名、恋人ラベル、LINE全文、メモ全文、正確GPS、顔crop、実写真、private pathを出しません。</li>
@@ -594,6 +595,8 @@ python -m relationship_lifelog_agent.cli doctor --format json</code></pre>
   --self-line-speaker-source-id "plr:line_speaker:self" \
   --self-line-speaker-group-source-id "plr:line_speaker_group:self" \
   --relationship-label "partner"</code></pre>
+      <p>重複profileを残したまま通常利用から外す場合は、明示的にdeactivateできます。</p>
+      <pre><code>python -m relationship_lifelog_agent.cli profile deactivate --id 2</code></pre>
       <p>relationship event candidatesはdry-runでMarkdown reportとして生成できます。標準ではDBに候補を書き込みません。</p>
       <p>
         reportの<code>--privacy-level</code>は三段階です。

@@ -85,6 +85,23 @@ class RelationshipRepository:
         )
         return rows[0] if rows else None
 
+    def find_active_duplicate_profiles(
+        self,
+        *,
+        profile_name: str,
+        relationship_label: str | None,
+        visibility: str = "private",
+        limit: int = 20,
+    ) -> list[RowDict]:
+        clauses = ["profile_name = ?", "visibility = ?"]
+        params: list[Any] = [profile_name, visibility]
+        if relationship_label is None:
+            clauses.append("relationship_label IS NULL")
+        else:
+            clauses.append("relationship_label = ?")
+            params.append(relationship_label)
+        return self._select_many("relationship_profiles", clauses, params, order_by="id", limit=limit)
+
     def list_profiles(self, *, visibility: str | None = None, limit: int = 100) -> list[RowDict]:
         clauses: list[str] = []
         params: list[Any] = []
