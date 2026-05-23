@@ -91,18 +91,9 @@ def build_chat_ui(settings: Settings) -> Any:
             review_targets_state = gr.State([])
             db_path_state = gr.State(settings.paths.relationship_db)
 
-        def user_turn(
-            user_message: str,
-            history: list[dict[str, str]] | None,
-        ) -> tuple[str, list[dict[str, str]]]:
-            history = history or []
-            if not user_message.strip():
-                return "", history
-            history = [*history, {"role": "user", "content": user_message}]
-            return "", history
-
-        def bot_turn(
-            history: list[dict[str, str]] | None,
+        def respond(
+            user_message: Any,
+            history: list[Any] | None,
             selected_backend: str,
             selected_profile: str | None,
             selected_date_from: str | None,
@@ -110,13 +101,10 @@ def build_chat_ui(settings: Settings) -> Any:
             selected_window_days: int | float | None,
             selected_mode: str,
             show_debug: bool,
-        ) -> tuple[list[dict[str, str]], Any, str, list[dict[str, object]]]:
-            history = history or []
-            if not history:
-                return history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", []
-            question = history[-1]["content"]
-            chat_answer = build_ui_chat_answer(
-                question,
+        ) -> tuple[str, list[dict[str, str]], Any, str, list[dict[str, object]]]:
+            updated_history, chat_answer = build_ui_chat_response(
+                user_message,
+                history,
                 base_settings=settings,
                 selected_backend=selected_backend,
                 selected_profile=selected_profile,
@@ -126,23 +114,26 @@ def build_chat_ui(settings: Settings) -> Any:
                 mode=selected_mode,
                 show_debug=show_debug,
             )
+            if chat_answer is None:
+                return "", updated_history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", []
             target_state = _target_state(chat_answer.review_targets)
             return (
-                [*history, {"role": "assistant", "content": chat_answer.text}],
+                "",
+                updated_history,
                 gr.update(choices=_target_choices(chat_answer.review_targets), value=_first_target_value(chat_answer.review_targets)),
                 _targets_markdown(chat_answer.review_targets),
                 target_state,
             )
 
-        send.click(user_turn, [message, chatbot], [message, chatbot]).then(
-            bot_turn,
-            [chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug],
-            [chatbot, review_target, review_targets_md, review_targets_state],
+        send.click(
+            respond,
+            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug],
+            [message, chatbot, review_target, review_targets_md, review_targets_state],
         )
-        message.submit(user_turn, [message, chatbot], [message, chatbot]).then(
-            bot_turn,
-            [chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug],
-            [chatbot, review_target, review_targets_md, review_targets_state],
+        message.submit(
+            respond,
+            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug],
+            [message, chatbot, review_target, review_targets_md, review_targets_state],
         )
         save_review.click(
             save_review_action_from_ui,
@@ -158,8 +149,46 @@ def build_chat_ui(settings: Settings) -> Any:
     return demo
 
 
+def build_ui_chat_response(
+    user_message: Any,
+    history: list[Any] | None,
+    *,
+    base_settings: Settings,
+    selected_backend: str,
+    selected_profile: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    post_conflict_window_days: int | float | None,
+    mode: str,
+    show_debug: bool = False,
+) -> tuple[list[dict[str, str]], ChatAnswer | None]:
+    normalized_history = _normalize_history(history)
+    question = _coerce_message_text(user_message)
+    if not question:
+        return normalized_history, None
+    chat_answer = build_ui_chat_answer(
+        question,
+        base_settings=base_settings,
+        selected_backend=selected_backend,
+        selected_profile=selected_profile,
+        date_from=date_from,
+        date_to=date_to,
+        post_conflict_window_days=post_conflict_window_days,
+        mode=mode,
+        show_debug=show_debug,
+    )
+    return (
+        [
+            *normalized_history,
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": chat_answer.text},
+        ],
+        chat_answer,
+    )
+
+
 def build_ui_chat_answer(
-    question: str,
+    question: Any,
     *,
     base_settings: Settings,
     selected_backend: str,
@@ -170,10 +199,11 @@ def build_ui_chat_answer(
     mode: str,
     show_debug: bool = False,
 ) -> ChatAnswer:
+    question_text = _coerce_message_text(question)
     settings = _settings_for_ui(base_settings, selected_backend, post_conflict_window_days)
     profile_id = parse_profile_choice(selected_profile)
     chat_answer = answer_chat(
-        question,
+        question_text,
         mode=mode,
         settings=settings,
         profile_id=profile_id,
@@ -183,7 +213,7 @@ def build_ui_chat_answer(
     )
     answer = chat_answer.text
     if show_debug:
-        route = route_question(question)
+        route = route_question(question_text)
         answer += (
             "\n\n<details>\n<summary>Debug</summary>\n\n"
             f"- intents: {', '.join(route.intents)}\n"
@@ -201,7 +231,7 @@ def build_ui_chat_answer(
 
 
 def build_ui_answer(
-    question: str,
+    question: Any,
     *,
     base_settings: Settings,
     selected_backend: str,
@@ -223,6 +253,56 @@ def build_ui_answer(
         mode=mode,
         show_debug=show_debug,
     ).text
+
+
+def _normalize_history(history: list[Any] | None) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for item in history or []:
+        if isinstance(item, dict):
+            role = item.get("role")
+            if role not in {"user", "assistant"}:
+                role = "user"
+            content = _coerce_message_text(item.get("content"))
+            if content:
+                messages.append({"role": role, "content": content})
+            continue
+        if isinstance(item, (list, tuple)):
+            if item:
+                user_text = _coerce_message_text(item[0])
+                if user_text:
+                    messages.append({"role": "user", "content": user_text})
+            if len(item) > 1:
+                assistant_text = _coerce_message_text(item[1])
+                if assistant_text:
+                    messages.append({"role": "assistant", "content": assistant_text})
+            continue
+        content = _coerce_message_text(item)
+        if content:
+            messages.append({"role": "user", "content": content})
+    return messages
+
+
+def _latest_user_message(history: list[Any] | None) -> str:
+    for item in reversed(_normalize_history(history)):
+        if item.get("role") == "user":
+            return item["content"]
+    return ""
+
+
+def _coerce_message_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return _coerce_message_text(value.get("content"))
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = _coerce_message_text(item)
+            if text:
+                return text
+        return ""
+    return str(value).strip()
 
 
 def save_review_action_from_ui(

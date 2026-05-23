@@ -4,7 +4,14 @@ from relationship_lifelog_agent.config import AdapterSettings, PathSettings, Rel
 from relationship_lifelog_agent.db.repository import RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import detect_answer_safety_violations
 from relationship_lifelog_agent.profiles import PROFILE_NONE_VALUE
-from relationship_lifelog_agent.ui.chat_ui import build_chat_ui, build_ui_answer, build_ui_chat_answer, save_review_action_from_ui
+from relationship_lifelog_agent.ui.chat_ui import (
+    _latest_user_message,
+    build_chat_ui,
+    build_ui_answer,
+    build_ui_chat_response,
+    build_ui_chat_answer,
+    save_review_action_from_ui,
+)
 
 
 def test_chat_ui_builds_with_safe_defaults() -> None:
@@ -32,6 +39,11 @@ def test_app_parser_accepts_runtime_port() -> None:
 
     assert args.port == 7863
     assert args.smoke is True
+
+
+def test_chat_ui_extracts_latest_user_message_from_gradio_history_shapes() -> None:
+    assert _latest_user_message([["喧嘩はどのくらいしている？", None]]) == "喧嘩はどのくらいしている？"
+    assert _latest_user_message([{"role": "user", "content": ["喧嘩の後どこへ行っている？"]}]) == "喧嘩の後どこへ行っている？"
 
 
 def test_answer_uses_collapsible_markdown_sections() -> None:
@@ -66,6 +78,48 @@ def test_chat_ui_mock_backend_answer_uses_profile_and_date_range(tmp_path) -> No
     assert "2025-01-10" in answer
     assert "2025-02-14" not in answer
     assert "profile_configured: True" in answer
+
+
+def test_chat_ui_answer_coerces_list_question_from_gradio_event(tmp_path) -> None:
+    settings, profile_id = _settings_with_profile(tmp_path)
+
+    answer = build_ui_answer(
+        ["喧嘩はどのくらいしている？"],
+        base_settings=settings,
+        selected_backend="mock",
+        selected_profile=str(profile_id),
+        date_from="2025-01-01",
+        date_to="2025-01-31",
+        post_conflict_window_days=7,
+        mode="private",
+    )
+
+    assert "要約:" in answer
+    assert "喧嘩候補" in answer
+
+
+def test_chat_ui_response_returns_gradio_messages_format(tmp_path) -> None:
+    import gradio as gr
+
+    settings, profile_id = _settings_with_profile(tmp_path)
+
+    history, chat_answer = build_ui_chat_response(
+        "喧嘩はどのくらいしている？",
+        [],
+        base_settings=settings,
+        selected_backend="mock",
+        selected_profile=str(profile_id),
+        date_from="2025-01-01",
+        date_to="2025-01-31",
+        post_conflict_window_days=7,
+        mode="private",
+    )
+
+    assert chat_answer is not None
+    assert history[0]["role"] == "user"
+    assert history[1]["role"] == "assistant"
+    assert "要約:" in history[1]["content"]
+    gr.Chatbot().postprocess(history)
 
 
 def test_chat_ui_upstream_readonly_unconfigured_fails_safely(tmp_path) -> None:
