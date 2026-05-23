@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from relationship_lifelog_agent.agent.executor import ChatAnswer, ReviewTarget, answer_chat
-from relationship_lifelog_agent.agent.router import route_question
+from relationship_lifelog_agent.agent.executor import ChatAnswer, ReviewTarget
+from relationship_lifelog_agent.agent.reasoning_orchestrator import answer_with_reasoning
 from relationship_lifelog_agent.config import Settings
 from relationship_lifelog_agent.db.repository import ALLOWED_RELATIONSHIP_LABELS, RelationshipRepository
 from relationship_lifelog_agent.privacy.guard import sanitize_answer
@@ -48,6 +48,7 @@ def build_chat_ui(settings: Settings) -> Any:
             send = gr.Button("Send", variant="primary", scale=1)
             clear = gr.Button("Clear", scale=1)
         db_path_state = gr.State(settings.paths.relationship_db)
+        conversation_state = gr.State({})
         with gr.Accordion("Settings", open=False):
             backend = gr.Dropdown(
                 choices=["mock", "upstream_readonly"],
@@ -132,8 +133,9 @@ def build_chat_ui(settings: Settings) -> Any:
             selected_window_days: int | float | None,
             selected_mode: str,
             show_debug: bool,
-        ) -> tuple[str, list[dict[str, str]], Any, str, list[dict[str, object]]]:
-            updated_history, chat_answer = build_ui_chat_response(
+            current_conversation_state: dict[str, object] | None,
+        ) -> tuple[str, list[dict[str, str]], Any, str, list[dict[str, object]], dict[str, object]]:
+            updated_history, chat_answer, updated_state = build_ui_chat_turn(
                 user_message,
                 history,
                 base_settings=settings,
@@ -144,9 +146,10 @@ def build_chat_ui(settings: Settings) -> Any:
                 post_conflict_window_days=selected_window_days,
                 mode=selected_mode,
                 show_debug=show_debug,
+                conversation_state=current_conversation_state,
             )
             if chat_answer is None:
-                return "", updated_history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", []
+                return "", updated_history, gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], updated_state
             target_state = _target_state(chat_answer.review_targets)
             return (
                 "",
@@ -154,17 +157,18 @@ def build_chat_ui(settings: Settings) -> Any:
                 gr.update(choices=_target_choices(chat_answer.review_targets), value=_first_target_value(chat_answer.review_targets)),
                 _targets_markdown(chat_answer.review_targets),
                 target_state,
+                updated_state,
             )
 
         send.click(
             respond,
-            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug],
-            [message, chatbot, review_target, review_targets_md, review_targets_state],
+            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug, conversation_state],
+            [message, chatbot, review_target, review_targets_md, review_targets_state, conversation_state],
         )
         message.submit(
             respond,
-            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug],
-            [message, chatbot, review_target, review_targets_md, review_targets_state],
+            [message, chatbot, backend, profile, date_from, date_to, post_conflict_window_days, mode, debug, conversation_state],
+            [message, chatbot, review_target, review_targets_md, review_targets_state, conversation_state],
         )
         save_review.click(
             save_review_action_from_ui,
@@ -188,9 +192,9 @@ def build_chat_ui(settings: Settings) -> Any:
             [profile_save_status, profile],
         )
         clear.click(
-            lambda: ([], gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], ""),
+            lambda: ([], gr.update(choices=[], value=None), "レビュー対象はまだありません。", [], "", {}),
             None,
-            [chatbot, review_target, review_targets_md, review_targets_state, review_status],
+            [chatbot, review_target, review_targets_md, review_targets_state, review_status, conversation_state],
         )
 
     return demo
@@ -209,10 +213,40 @@ def build_ui_chat_response(
     mode: str,
     show_debug: bool = False,
 ) -> tuple[list[dict[str, str]], ChatAnswer | None]:
+    history, chat_answer, _state = build_ui_chat_turn(
+        user_message,
+        history,
+        base_settings=base_settings,
+        selected_backend=selected_backend,
+        selected_profile=selected_profile,
+        date_from=date_from,
+        date_to=date_to,
+        post_conflict_window_days=post_conflict_window_days,
+        mode=mode,
+        show_debug=show_debug,
+        conversation_state=None,
+    )
+    return history, chat_answer
+
+
+def build_ui_chat_turn(
+    user_message: Any,
+    history: list[Any] | None,
+    *,
+    base_settings: Settings,
+    selected_backend: str,
+    selected_profile: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    post_conflict_window_days: int | float | None,
+    mode: str,
+    show_debug: bool = False,
+    conversation_state: dict[str, object] | None = None,
+) -> tuple[list[dict[str, str]], ChatAnswer | None, dict[str, object]]:
     normalized_history = _normalize_history(history)
     question = _coerce_message_text(user_message)
     if not question:
-        return normalized_history, None
+        return normalized_history, None, conversation_state or {}
     chat_answer = build_ui_chat_answer(
         question,
         base_settings=base_settings,
@@ -223,6 +257,7 @@ def build_ui_chat_response(
         post_conflict_window_days=post_conflict_window_days,
         mode=mode,
         show_debug=show_debug,
+        conversation_state=conversation_state,
     )
     return (
         [
@@ -231,6 +266,7 @@ def build_ui_chat_response(
             {"role": "assistant", "content": chat_answer.text},
         ],
         chat_answer,
+        getattr(chat_answer, "_conversation_state", conversation_state or {}),
     )
 
 
@@ -245,36 +281,28 @@ def build_ui_chat_answer(
     post_conflict_window_days: int | float | None,
     mode: str,
     show_debug: bool = False,
+    conversation_state: dict[str, object] | None = None,
 ) -> ChatAnswer:
     question_text = _coerce_message_text(question)
     settings = _settings_for_ui(base_settings, selected_backend, post_conflict_window_days)
     profile_id = parse_profile_choice(selected_profile)
-    chat_answer = answer_chat(
+    response = answer_with_reasoning(
         question_text,
         mode=mode,
         settings=settings,
-        profile_id=profile_id,
+        selected_profile_id=profile_id,
         date_from=_clean_text(date_from),
         date_to=_clean_text(date_to),
         post_conflict_window_days=_safe_window_days(post_conflict_window_days),
+        state=conversation_state,
+        show_debug=show_debug,
     )
-    answer = chat_answer.text
-    if show_debug:
-        route = route_question(question_text)
-        answer += (
-            "\n\n<details>\n<summary>Debug</summary>\n\n"
-            f"- intents: {', '.join(route.intents)}\n"
-            f"- adapter: {settings.adapter.backend}\n"
-            f"- profile_id: {profile_id if profile_id is not None else 'unset'}\n"
-            f"- date_from: {_clean_text(date_from) or 'unset'}\n"
-            f"- date_to: {_clean_text(date_to) or 'unset'}\n"
-            f"- post_conflict_window_days: {_safe_window_days(post_conflict_window_days)}\n\n"
-            "</details>"
-        )
-    return ChatAnswer(
-        text=sanitize_answer(answer, mode=mode),
-        review_targets=chat_answer.review_targets,
+    chat_answer = ChatAnswer(
+        text=sanitize_answer(response.answer_markdown, mode=mode),
+        review_targets=response.review_targets,
     )
+    object.__setattr__(chat_answer, "_conversation_state", response.conversation_state.to_dict())
+    return chat_answer
 
 
 def save_profile_from_ui(

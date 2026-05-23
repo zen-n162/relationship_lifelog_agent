@@ -298,10 +298,11 @@
       <h2>このアプリがすること</h2>
       <div class="grid">
         <article class="card">
-          <h3>質問を意図に分類</h3>
+          <h3>質問と文脈を理解</h3>
           <p>
-            日本語の質問をルールベースで分類します。MVPではLLM分類を使わず、
-            「喧嘩はどのくらいしている？」などを決定的にintentへ振り分けます。
+            日本語の質問をルールベースでQuestionFrameに整理し、intent、対象profile、
+            date range、省略参照、必要な出力、安全リスクを分けて扱います。
+            「その日を詳しく」のような質問では直前回答の観測日を参照します。
           </p>
         </article>
         <article class="card">
@@ -310,6 +311,14 @@
             標準ではmock adapterを使い、必要に応じて<code>upstream_readonly</code>で
             LINE候補、外出候補、メモ候補、月次振り返り候補をread-only取得します。
             上流アプリのDBは更新しません。
+          </p>
+        </article>
+        <article class="card">
+          <h3>回答可能性を判定</h3>
+          <p>
+            profile、対象speaker、自分側speaker、上流adapter、日付範囲、根拠の有無を
+            InformationNeedとして確認します。足りない情報がある場合は検索せず、
+            手動設定や次の確認手順を案内します。
           </p>
         </article>
         <article class="card">
@@ -332,7 +341,7 @@
         <article class="card">
           <h3>慎重に回答する</h3>
           <p>
-            件数、日付、候補の集計はPythonで計算します。喧嘩や仲直りを断定せず、
+            QueryPlanに基づいて、件数、日付、候補の集計はPythonで計算します。喧嘩や仲直りを断定せず、
             事実と推定を分けて、根拠・信頼度・注意を含む回答を返します。
             根拠表示はLINE primary evidenceを優先し、日付不明・低関連・無関係なnote候補は通常回答から除外します。
           </p>
@@ -414,33 +423,47 @@
         <div class="flow-step">
           <span class="num">2</span>
           <div>
-            <strong>Router</strong>
-            <p>質問文からintentを抽出します。複数intentも許可します。</p>
+            <strong>Question understanding</strong>
+            <p>質問文からintent、対象profile名、date range、直前回答への参照、必要な出力、安全リスクを抽出します。LLMなしのルールベースfallbackで動作します。</p>
           </div>
         </div>
         <div class="flow-step">
           <span class="num">3</span>
           <div>
-            <strong>Planner / Executor</strong>
-            <p>intentに応じて必要なadapter呼び出しを決め、設定されたbackendとdate rangeから根拠を集めます。relationship DBに保存済みcandidateがあれば、それも候補として読みます。</p>
+            <strong>Profile resolver / Answerability checker</strong>
+            <p><code>default_profile_id</code>を優先し、同名profileがあっても完全profileを選びます。必要なspeaker IDやadapter設定が足りない場合は、何が必要かを説明して実検索を止めます。</p>
           </div>
         </div>
         <div class="flow-step">
           <span class="num">4</span>
+          <div>
+            <strong>Query planner / Tool execution</strong>
+            <p>QuestionFrameとAnswerabilityReportから、resolve_profile、search_line_conflict_signals、search_date_near_notes、conflict_auditなどのplan stepを作ります。Evidence Contractで使える根拠と除外する根拠を明示します。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">5</span>
           <div>
             <strong>Analytics / Answer composer</strong>
             <p>件数や日付を決定的に集計し、要約、集計、具体例、根拠、信頼度、注意を含む日本語回答を作ります。通常回答の根拠は最大5件に制限し、private modeでもexcerptを短くします。</p>
           </div>
         </div>
         <div class="flow-step">
-          <span class="num">5</span>
+          <span class="num">6</span>
           <div>
             <strong>Privacy guard</strong>
             <p>回答後に禁止表現やpublic modeで出してはいけない情報を検査・匿名化します。</p>
           </div>
         </div>
         <div class="flow-step">
-          <span class="num">6</span>
+          <span class="num">7</span>
+          <div>
+            <strong>Conversation state</strong>
+            <p>active profile、直前intent、date range、observed dates、review targets、query plan、answerability reportをGradio session stateに保存し、省略質問の補完に使います。</p>
+          </div>
+        </div>
+        <div class="flow-step">
+          <span class="num">8</span>
           <div>
             <strong>Review action</strong>
             <p>回答にrelationship DB由来のcandidateが含まれる場合、最小Review accordionからverify、reject、mark_as_misunderstandingなどを保存できます。上流データや元sourceは変更しません。</p>
@@ -468,8 +491,8 @@
             </tr>
             <tr>
               <td><code>agent/</code></td>
-              <td>質問分類、計画、実行、回答生成を担当します。</td>
-              <td>ルールベースrouter、date range付きadapter計画、relationship DB保存済みcandidateの読み込み、決定的回答生成を実装済みです。</td>
+              <td>会話理解、profile解決、回答可能性判定、計画、実行、回答生成を担当します。</td>
+              <td>ConversationState、QuestionFrame、ProfileResolver、AnswerabilityReport、InformationNeed、Evidence Contract、Tool Registry、Reasoning Orchestratorを実装済みです。LLMなしで動き、local LLMは将来のQuestionFrame補助に限定します。</td>
             </tr>
             <tr>
               <td><code>analytics/</code></td>
