@@ -82,11 +82,67 @@ def test_chat_ui_stream_handler_is_generator_and_sets_metadata(tmp_path) -> None
     assert isinstance(result, Iterator)
     snapshots = list(result)
     first_history = snapshots[0][1]
-    assert first_history[-1]["metadata"]["status"] in {"pending", "done"}
-    assert first_history[-1]["metadata"]["title"]
+    assert first_history[-1]["metadata"]["status"] == "pending"
+    assert first_history[-1]["metadata"]["title"] == "処理プロセス"
     final_history = snapshots[-1][1]
+    progress_messages = [
+        message
+        for message in final_history
+        if message.get("metadata", {}).get("title") == "処理プロセス"
+    ]
+    assert len(progress_messages) == 1
+    assert progress_messages[0]["metadata"]["status"] == "done"
+    assert not [message for message in final_history if message.get("metadata", {}).get("status") == "pending"]
     assert final_history[-1]["role"] == "assistant"
     assert "要約:" in final_history[-1]["content"]
+    gr.Chatbot().postprocess(final_history)
+
+
+def test_completed_progress_block_stays_collapsed_on_next_turn(tmp_path) -> None:
+    settings = _settings_with_profile(tmp_path)
+
+    first_snapshots = list(
+        build_ui_chat_turn_stream(
+            "いおりとの喧嘩はどのくらいしている？",
+            [],
+            base_settings=settings,
+            selected_backend="mock",
+            selected_profile="1",
+            date_from="",
+            date_to="",
+            post_conflict_window_days=14,
+            mode="private",
+            show_debug=False,
+            conversation_state={},
+        )
+    )
+    first_history = first_snapshots[-1][1]
+
+    second_snapshots = list(
+        build_ui_chat_turn_stream(
+            "その日を詳しく",
+            first_history,
+            base_settings=settings,
+            selected_backend="mock",
+            selected_profile="1",
+            date_from="",
+            date_to="",
+            post_conflict_window_days=14,
+            mode="private",
+            show_debug=False,
+            conversation_state=first_snapshots[-1][5],
+        )
+    )
+    final_history = second_snapshots[-1][1]
+    progress_messages = [
+        message
+        for message in final_history
+        if message.get("metadata", {}).get("title") == "処理プロセス"
+    ]
+
+    assert len(progress_messages) == 2
+    assert all(message["metadata"]["status"] == "done" for message in progress_messages)
+    assert not [message for message in final_history if message.get("metadata", {}).get("status") == "pending"]
     gr.Chatbot().postprocess(final_history)
 
 

@@ -284,7 +284,7 @@ def build_ui_chat_turn_stream(
         return
     settings = _settings_for_ui(base_settings, selected_backend, post_conflict_window_days)
     profile_id = parse_profile_choice(selected_profile)
-    running_history: list[dict[str, Any]] = [*normalized_history, {"role": "user", "content": question}]
+    base_running_history: list[dict[str, Any]] = [*normalized_history, {"role": "user", "content": question}]
     if not settings.ui.stream_progress or not settings.ui.show_progress_messages:
         history_once, chat_answer, updated_state = build_ui_chat_turn(
             question,
@@ -314,6 +314,7 @@ def build_ui_chat_turn_stream(
 
     latest_state = conversation_state or {}
     latest_targets: tuple[ReviewTarget, ...] = ()
+    progress_events: list[AgentStreamEvent] = []
     for event in stream_answer(
         question,
         mode=mode,
@@ -330,9 +331,23 @@ def build_ui_chat_turn_stream(
         if event.kind == "final_answer":
             latest_state = dict(event.metadata.get("conversation_state") or latest_state)
             latest_targets = _review_targets_from_metadata(event.metadata.get("review_targets"))
+            running_history = [*base_running_history]
+            if progress_events:
+                running_history.append(_progress_chat_message(progress_events, done=True))
             running_history.append({"role": "assistant", "content": event.message})
         elif _show_progress_event(event, settings):
-            running_history.append(_event_chat_message(event))
+            progress_events.append(event)
+            running_history = [
+                *base_running_history,
+                _progress_chat_message(progress_events, done=False),
+            ]
+        else:
+            if not progress_events:
+                continue
+            running_history = [
+                *base_running_history,
+                _progress_chat_message(progress_events, done=False),
+            ]
         yield (
             "",
             _copy_history(running_history),
@@ -459,8 +474,8 @@ def build_ui_answer(
     ).text
 
 
-def _normalize_history(history: list[Any] | None) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
+def _normalize_history(history: list[Any] | None) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
     for item in history or []:
         if isinstance(item, dict):
             role = item.get("role")
@@ -468,7 +483,11 @@ def _normalize_history(history: list[Any] | None) -> list[dict[str, str]]:
                 role = "user"
             content = _coerce_message_text(item.get("content"))
             if content:
-                messages.append({"role": role, "content": content})
+                message: dict[str, Any] = {"role": role, "content": content}
+                metadata = _safe_chat_metadata(item.get("metadata"))
+                if metadata:
+                    message["metadata"] = metadata
+                messages.append(message)
             continue
         if isinstance(item, (list, tuple)):
             if item:
@@ -489,6 +508,57 @@ def _normalize_history(history: list[Any] | None) -> list[dict[str, str]]:
 def _event_chat_message(event: AgentStreamEvent) -> dict[str, Any]:
     content = event.message
     return {"role": "assistant", "content": content, "metadata": event.safe_metadata()}
+
+
+def _progress_chat_message(
+    events: list[AgentStreamEvent],
+    *,
+    done: bool,
+) -> dict[str, Any]:
+    status = "done" if done else "pending"
+    return {
+        "role": "assistant",
+        "content": _progress_log(events),
+        "metadata": {
+            "title": "処理プロセス",
+            "status": status,
+            "kind": "progress",
+        },
+    }
+
+
+def _progress_log(events: list[AgentStreamEvent]) -> str:
+    lines: list[str] = []
+    for event in events:
+        if not event.safe_for_user:
+            continue
+        title = _truncate_progress_text(event.title, 80)
+        message = _truncate_progress_text(event.message, 180)
+        prefix = "完了" if event.status == "done" else "確認中"
+        if event.status == "error":
+            prefix = "注意"
+        lines.append(f"- {prefix}: {title} - {message}")
+    return "\n".join(lines) or "安全な処理状況を確認しています。"
+
+
+def _truncate_progress_text(value: str, max_chars: int) -> str:
+    text = " ".join(value.split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _safe_chat_metadata(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed = {"title", "status", "kind", "id", "parent_id", "duration", "log"}
+    metadata = {key: item for key, item in value.items() if key in allowed}
+    status = metadata.get("status")
+    if status not in {"pending", "done", "error"}:
+        metadata.pop("status", None)
+    if "title" in metadata:
+        metadata["title"] = _truncate_progress_text(str(metadata["title"]), 80)
+    return metadata
 
 
 def _copy_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:

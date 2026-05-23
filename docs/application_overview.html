@@ -326,6 +326,7 @@
           <p>
             Chat UIは処理中に質問整理、profile確認、必要情報確認、read-only tool使用、
             根拠filtering、集計、安全checkを段階的に表示します。
+            これらは1つの処理プロセス枠にまとめ、最終回答後は完了状態の折りたたみ表示として残します。
             表示するのはsafe progress summaryであり、raw chain-of-thoughtやraw promptではありません。
           </p>
         </article>
@@ -550,7 +551,7 @@
             <tr>
               <td><code>ui/</code></td>
               <td>ChatGPT風の最小Gradio UIを構成します。</td>
-              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、手動profile保存、最小review actionを含む折りたたみ設定を実装済みです。処理中はsafe progress messageをstream表示します。</td>
+              <td>チャット履歴、入力欄、送信ボタン、backend/profile/date range/window/mode/debug、手動profile保存、最小review actionを含む折りたたみ設定を実装済みです。処理中はsafe progress messageを1つの処理プロセス枠にstream表示し、回答後は完了状態で折りたたみます。</td>
             </tr>
           </tbody>
         </table>
